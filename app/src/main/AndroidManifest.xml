@@ -9,16 +9,16 @@
     <application
         android:allowBackup="false"
         android:icon="@drawable/ic_app"
-        android:label="티비룸 다운로더"
+        android:label="웹툰여지도 모바일"
         android:supportsRtl="true"
-        android:theme="@style/Theme.TVRoomDownloader"
+        android:theme="@style/Theme.WebtoonMap"
         android:usesCleartextTraffic="false">
+        <activity android:name=".ui.OfflineViewerActivity" />
+        <activity android:name=".ui.DownloadedSeriesActivity" />
         <activity
-            android:name=".ui.PlayerActivity"
-            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboardHidden"
+            android:name=".activation.ActivationActivity"
             android:exported="false"
-            android:resizeableActivity="true"
-            android:supportsPictureInPicture="true" />
+            android:screenOrientation="portrait" />
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -27,10 +27,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <service
-            android:name=".download.VideoDownloadService"
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
             android:exported="false"
-            android:foregroundServiceType="dataSync"
-            android:stopWithTask="false" />
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+        <service
+            android:name=".download.SeriesDownloadService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>
+
+

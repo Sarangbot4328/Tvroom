@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/background">
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@color/background">
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
         android:orientation="vertical" android:padding="20dp">
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -9,16 +10,220 @@
             android:layout_marginTop="22dp" android:background="@color/surface"
             android:orientation="vertical" android:padding="18dp">
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="티비룸 주소" android:textColor="@color/text_primary" android:textSize="17sp" android:textStyle="bold" />
+                android:text="웹툰 채널 선택" android:textColor="@color/text_primary"
+                android:textSize="17sp" android:textStyle="bold" />
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:layout_marginTop="7dp" android:text="주소가 변경되면 새 주소를 입력하고 저장하세요."
+                android:layout_marginTop="7dp" android:text="첫 번째 탭에서 사용할 웹툰 사이트를 선택합니다."
                 android:textColor="@color/text_secondary" android:textSize="13sp" />
-            <EditText android:id="@+id/tvroom_url" android:layout_width="match_parent"
-                android:layout_height="52dp" android:layout_marginTop="10dp"
-                android:hint="https://tvroom20.org/" android:inputType="textUri" android:maxLines="1" />
-            <Button android:id="@+id/save_tvroom_url" android:layout_width="match_parent"
+            <RadioGroup android:id="@+id/source_group" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="10dp"
+                android:orientation="vertical">
+                <RadioButton android:id="@+id/source_naver" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:text="네이버 웹툰" />
+                <RadioButton android:id="@+id/source_joatoon" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:text="조아툰" />
+                <RadioButton android:id="@+id/source_manhwabang" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:text="만화방" />
+                <RadioButton android:id="@+id/source_ililtoon" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:text="일일툰" />
+                <RadioButton android:id="@+id/source_blacktoon" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:text="블랙툰" />
+                <RadioButton android:id="@+id/source_wolfdot" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:text="늑대닷컴" />
+                <RadioButton android:id="@+id/source_hitomi" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:text="히토미" />
+            </RadioGroup>
+            <LinearLayout android:id="@+id/joatoon_address_box" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="10dp"
+                android:orientation="vertical">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="조아툰 주소" android:textColor="@color/text_primary" android:textStyle="bold" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp" android:text="주소가 변경되면 새 주소를 입력하고 저장하세요."
+                    android:textColor="@color/text_secondary" android:textSize="12sp" />
+                <EditText android:id="@+id/joatoon_url" android:layout_width="match_parent"
+                    android:layout_height="52dp" android:layout_marginTop="8dp"
+                    android:hint="https://joa-new.com" android:inputType="textUri"
+                    android:maxLines="1" android:paddingHorizontal="12dp" />
+                <Button android:id="@+id/save_joatoon_url" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:layout_marginTop="8dp"
+                    android:text="조아툰 주소 저장" android:textAllCaps="false" />
+            </LinearLayout>
+            <LinearLayout android:id="@+id/manhwabang_address_box" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="10dp"
+                android:orientation="vertical" android:visibility="gone">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="만화방 주소" android:textColor="@color/text_primary" android:textStyle="bold" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp" android:text="주소가 변경되면 새 주소를 입력하고 저장하세요."
+                    android:textColor="@color/text_secondary" android:textSize="12sp" />
+                <EditText android:id="@+id/manhwabang_url" android:layout_width="match_parent"
+                    android:layout_height="52dp" android:layout_marginTop="8dp"
+                    android:hint="https://manhwabang.net" android:inputType="textUri"
+                    android:maxLines="1" android:paddingHorizontal="12dp" />
+                <Button android:id="@+id/save_manhwabang_url" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:layout_marginTop="8dp"
+                    android:text="만화방 주소 저장" android:textAllCaps="false" />
+            </LinearLayout>
+            <LinearLayout android:id="@+id/ililtoon_address_box" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="10dp"
+                android:orientation="vertical" android:visibility="gone">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="일일툰 주소" android:textColor="@color/text_primary" android:textStyle="bold" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp" android:text="주소가 변경되면 새 주소를 입력하고 저장하세요."
+                    android:textColor="@color/text_secondary" android:textSize="12sp" />
+                <EditText android:id="@+id/ililtoon_url" android:layout_width="match_parent"
+                    android:layout_height="52dp" android:layout_marginTop="8dp"
+                    android:hint="https://11toon148.com" android:inputType="textUri"
+                    android:maxLines="1" android:paddingHorizontal="12dp" />
+                <Button android:id="@+id/save_ililtoon_url" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:layout_marginTop="8dp"
+                    android:text="일일툰 주소 저장" android:textAllCaps="false" />
+            </LinearLayout>
+            <LinearLayout android:id="@+id/blacktoon_address_box" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="10dp"
+                android:orientation="vertical" android:visibility="gone">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="블랙툰 주소" android:textColor="@color/text_primary" android:textStyle="bold" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp" android:text="주소가 변경되면 새 주소를 입력하고 저장하세요."
+                    android:textColor="@color/text_secondary" android:textSize="12sp" />
+                <EditText android:id="@+id/blacktoon_url" android:layout_width="match_parent"
+                    android:layout_height="52dp" android:layout_marginTop="8dp"
+                    android:hint="https://blacktoon416.com" android:inputType="textUri"
+                    android:maxLines="1" android:paddingHorizontal="12dp" />
+                <Button android:id="@+id/save_blacktoon_url" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:layout_marginTop="8dp"
+                    android:text="블랙툰 주소 저장" android:textAllCaps="false" />
+            </LinearLayout>
+            <LinearLayout android:id="@+id/wolfdot_address_box" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="10dp"
+                android:orientation="vertical" android:visibility="gone">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="늑대닷컴 주소" android:textColor="@color/text_primary" android:textStyle="bold" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp" android:text="주소가 변경되면 새 주소를 입력하고 저장하세요."
+                    android:textColor="@color/text_secondary" android:textSize="12sp" />
+                <EditText android:id="@+id/wolfdot_url" android:layout_width="match_parent"
+                    android:layout_height="52dp" android:layout_marginTop="8dp"
+                    android:hint="https://wfwf421.com" android:inputType="textUri"
+                    android:maxLines="1" android:paddingHorizontal="12dp" />
+                <Button android:id="@+id/save_wolfdot_url" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:layout_marginTop="8dp"
+                    android:text="늑대닷컴 주소 저장" android:textAllCaps="false" />
+            </LinearLayout>
+            <LinearLayout android:id="@+id/hitomi_address_box" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="10dp"
+                android:orientation="vertical" android:visibility="gone">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="히토미 주소" android:textColor="@color/text_primary" android:textStyle="bold" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp" android:text="주소가 변경되면 새 주소를 입력하고 저장하세요."
+                    android:textColor="@color/text_secondary" android:textSize="12sp" />
+                <EditText android:id="@+id/hitomi_url" android:layout_width="match_parent"
+                    android:layout_height="52dp" android:layout_marginTop="8dp"
+                    android:hint="https://hitomi.la" android:inputType="textUri"
+                    android:maxLines="1" android:paddingHorizontal="12dp" />
+                <Button android:id="@+id/save_hitomi_url" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:layout_marginTop="8dp"
+                    android:text="히토미 주소 저장" android:textAllCaps="false" />
+            </LinearLayout>
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="22dp" android:background="@color/surface"
+            android:orientation="vertical" android:padding="18dp">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="웹툰 보기 방식" android:textColor="@color/text_primary"
+                android:textSize="17sp" android:textStyle="bold" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="7dp" android:text="다운로드한 회차를 볼 때 페이지 넘김 방식을 선택합니다."
+                android:textColor="@color/text_secondary" android:textSize="13sp" />
+            <RadioGroup android:id="@+id/view_mode_group" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="10dp"
+                android:orientation="vertical">
+                <RadioButton android:id="@+id/view_mode_scroll" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:text="웹툰 방식 (아래로 스크롤)" />
+                <RadioButton android:id="@+id/view_mode_page_fit" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:text="만화책 모드 1 (한 페이지 전체 보기 · 이전 방식)" />
+                <RadioButton android:id="@+id/view_mode_page" android:layout_width="match_parent"
+                    android:layout_height="48dp" android:text="만화책 모드 2 (가로 폭 채우기 · 현재 방식)" />
+            </RadioGroup>
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="22dp" android:background="@color/surface"
+            android:orientation="vertical" android:padding="18dp">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="자동 넘기기" android:textColor="@color/text_primary"
+                android:textSize="17sp" android:textStyle="bold" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="7dp"
+                android:text="다운로드한 회차를 보는 화면에서만 지정한 간격마다 자동으로 한 번씩 넘깁니다. 뷰어 화면을 빠르게 두 번 터치하면 일시 중단하거나 다시 시작할 수 있습니다."
+                android:textColor="@color/text_secondary" android:textSize="13sp" />
+            <CheckBox android:id="@+id/auto_advance" android:layout_width="match_parent"
                 android:layout_height="48dp" android:layout_marginTop="8dp"
-                android:text="티비룸 주소 저장" android:textAllCaps="false" />
+                android:text="자동 넘기기 사용" />
+            <LinearLayout android:id="@+id/auto_advance_options"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp" android:text="넘기기 간격(초)"
+                    android:textColor="@color/text_primary" android:textStyle="bold" />
+                <EditText android:id="@+id/auto_advance_seconds"
+                    android:layout_width="match_parent" android:layout_height="52dp"
+                    android:layout_marginTop="8dp" android:hint="2" android:inputType="number"
+                    android:maxLength="4" android:maxLines="1" android:paddingHorizontal="12dp" />
+                <Button android:id="@+id/save_auto_advance_seconds"
+                    android:layout_width="match_parent" android:layout_height="48dp"
+                    android:layout_marginTop="8dp" android:text="넘기기 간격 저장"
+                    android:textAllCaps="false" />
+            </LinearLayout>
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="22dp" android:background="@color/surface"
+            android:orientation="vertical" android:padding="18dp">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="저데이터 다운로드" android:textColor="@color/text_primary"
+                android:textSize="17sp" android:textStyle="bold" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="7dp"
+                android:text="느린 연결에서 진행 단계가 지정 시간 동안 바뀌지 않으면 현재 작품을 자동으로 중단하고 미완성 파일을 정리한 뒤 이어받습니다."
+                android:textColor="@color/text_secondary" android:textSize="13sp" />
+            <CheckBox android:id="@+id/low_data_mode" android:layout_width="match_parent"
+                android:layout_height="48dp" android:layout_marginTop="8dp"
+                android:text="저데이터 모드 사용" />
+            <LinearLayout android:id="@+id/low_data_options"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp" android:text="자동 이어받기 대기 시간(분)"
+                    android:textColor="@color/text_primary" android:textStyle="bold" />
+                <EditText android:id="@+id/low_data_minutes"
+                    android:layout_width="match_parent" android:layout_height="52dp"
+                    android:layout_marginTop="8dp" android:hint="5" android:inputType="number"
+                    android:maxLength="4" android:maxLines="1" android:paddingHorizontal="12dp" />
+                <Button android:id="@+id/save_low_data_minutes"
+                    android:layout_width="match_parent" android:layout_height="48dp"
+                    android:layout_marginTop="8dp" android:text="대기 시간 저장"
+                    android:textAllCaps="false" />
+            </LinearLayout>
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="22dp" android:background="@color/surface"
+            android:orientation="vertical" android:padding="18dp">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="데이터 이전" android:textColor="@color/text_primary"
+                android:textSize="17sp" android:textStyle="bold" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="7dp"
+                android:text="PC판 또는 앱에서 내보낸 .wtoon.zip 파일을 가져옵니다. PC판에서 가져온 회차는 실제로 앱에서 읽기 전까지 모두 안 읽음으로 표시됩니다."
+                android:textColor="@color/text_secondary" android:textSize="13sp" />
+            <Button android:id="@+id/import_transfer" android:layout_width="match_parent"
+                android:layout_height="50dp" android:layout_marginTop="12dp"
+                android:text="데이터 가져오기" android:textAllCaps="false" />
+            <TextView android:id="@+id/import_status" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="8dp"
+                android:textColor="@color/text_secondary" android:textSize="12sp" />
         </LinearLayout>
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
             android:layout_marginTop="22dp" android:background="@color/surface"
@@ -28,7 +233,7 @@
                 android:textSize="17sp" android:textStyle="bold" />
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:layout_marginTop="7dp"
-                android:text="중단·실패한 다운로드 조각과 변환 캐시만 삭제합니다. 완료된 영상과 썸네일은 삭제하지 않습니다."
+                android:text="내보내기·가져오기·뷰어 캐시와 중단된 다운로드 조각만 삭제합니다. 다운로드가 완료된 웹툰, 회차 ZIP, 썸네일과 작품 정보는 삭제하지 않습니다."
                 android:textColor="@color/text_secondary" android:textSize="13sp" />
             <Button android:id="@+id/cleanup_temp_files" android:layout_width="match_parent"
                 android:layout_height="50dp" android:layout_marginTop="12dp"
@@ -45,7 +250,13 @@
                 android:textSize="17sp" android:textStyle="bold" />
             <TextView android:id="@+id/app_version" android:layout_width="wrap_content"
                 android:layout_height="wrap_content" android:layout_marginTop="10dp"
-                android:text="버전 1.0.0" android:textColor="@color/text_secondary" android:textSize="14sp" />
+                android:text="버전 1.5.8" android:textColor="@color/text_secondary" android:textSize="14sp" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="10dp" android:textColor="@color/text_secondary"
+                android:textSize="13sp"
+                android:text="1.5.8 업데이트 · 2026-07-18\n• 웹툰·만화책 모드 1(전체 보기)·모드 2(가로 폭 채움) 선택 추가\n• 만화책 보기 화면 가로 폭 맞춤·긴 페이지 세로 이동 지원\n• 히토미 이미지 다운로드 정체 수정·페이지별 진행 표시\n• 새 웹툰 채널 ‘히토미’ 추가 (주소 직접 등록·갤러리 다운로드·썸네일)\n• 늑대닷컴 만화책 카테고리 전체 다운로드·이어받기 지원\n• 새 웹툰 채널 ‘늑대닷컴’ 추가 (주소 직접 등록·전체 다운로드)\n• 블랙툰 다운로드가 시작되지 않던 문제 수정\n• 앱 데이터 교환·다른 만화책 앱용 내보내기와 기기 저장 추가\n• 내보내기 임시 파일 자동 삭제와 수동 정리 기능 추가\n• 새 웹툰 채널 ‘블랙툰’ 추가 (주소 직접 등록·전체 다운로드)\n• 자동 넘기기와 초 단위 간격 설정\n• 만화책 페이지 이동·웹툰 세로 자동 스크롤\n• 마지막 화면에서 다음 회차 자동 이동\n• 빠른 두 번 터치 일시 중단·재개\n• 저데이터 모드와 멈춘 다운로드 자동 이어받기" />
         </LinearLayout>
     </LinearLayout>
 </ScrollView>
+
+
