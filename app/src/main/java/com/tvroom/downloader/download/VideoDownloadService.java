@@ -10,7 +10,7 @@ import android.os.IBinder;
 import android.os.PowerManager;
 
 import androidx.annotation.Nullable;
-import androidx.core.app.ContextCompat;
+import androidx.core.content.ContextCompat;
 import androidx.core.app.NotificationCompat;
 
 import com.tvroom.downloader.MainActivity;
