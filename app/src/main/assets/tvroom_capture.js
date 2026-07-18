@@ -32,7 +32,9 @@
     try {
       var url = typeof value === 'string' ? value : value && value.url;
       if (url && /^https?:/i.test(url) && /(m3u8|segment_list|\.ts(?:[?#]|$)|\.m4s(?:[?#]|$)|\.key(?:[?#]|$)|\/key(?:[/?#]|$))/i.test(url)) {
-        send({ type: 'url', url: url });
+        var referer = '';
+        try { if (/^https?:/i.test(location.href)) referer = location.href; } catch (_) {}
+        send({ type: 'url', url: url, referer: referer });
       }
     } catch (_) {}
   }

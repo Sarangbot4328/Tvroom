@@ -115,7 +115,7 @@ public final class TVRoomChannelView extends FrameLayout {
                 capture.reset(url); updateButtons();
             }
             @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                capture.rememberUrl(request.getUrl().toString());
+                capture.rememberRequest(request.getUrl().toString(), request.getRequestHeaders());
                 post(TVRoomChannelView.this::updateButtons);
                 return super.shouldInterceptRequest(view, request);
             }

@@ -179,6 +179,7 @@ final class HlsDownloader {
             catch (Exception ignored) { }
         }
         connection.setRequestProperty("Accept", allowImage ? "*/*" : "application/vnd.apple.mpegurl,*/*");
+        connection.setRequestProperty("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7");
         try {
             int code = connection.getResponseCode();
             if (code >= 400) throw new HttpStatusException(code);
@@ -192,6 +193,11 @@ final class HlsDownloader {
 
     private List<String> refererCandidates(String requestUrl, String preferred) {
         LinkedHashSet<String> values = new LinkedHashSet<>();
+        String captured = job.streamReferers.get(requestUrl);
+        if (captured != null && !captured.isEmpty()) values.add(captured);
+        for (String value : job.streamReferers.values()) {
+            if (value != null && !value.isEmpty()) values.add(value);
+        }
         String jwt = jwtReferer(requestUrl);
         if (jwt != null) values.add(jwt);
         if (preferred != null && !preferred.isEmpty()) values.add(preferred);
