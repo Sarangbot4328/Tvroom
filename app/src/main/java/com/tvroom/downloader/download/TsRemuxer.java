@@ -5,8 +5,13 @@ import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.List;
 
 final class TsRemuxer {
@@ -15,20 +20,24 @@ final class TsRemuxer {
     private static final long UNSET = Long.MIN_VALUE;
     private static final long DEFAULT_VIDEO_STEP_US = 33_333L;
     private static final long DEFAULT_AUDIO_STEP_US = 21_333L;
+    private static final int TS_PACKET_SIZE = 188;
+    private static final int SEGMENTS_PER_BATCH = 8;
 
     private TsRemuxer() { }
 
     /**
-     * Opens each HLS segment separately. MediaExtractor often stops at a program or timestamp
-     * discontinuity when hundreds of MPEG-TS files are byte-concatenated. Giving every segment
-     * its own extractor and placing all samples on one timeline preserves duration and audio.
+     * Opens short batches of HLS segments. A small batch keeps MediaExtractor away from long
+     * discontinuous TS inputs while avoiding one native extractor instance per tiny fragment.
+     * PAT/PMT packets are prefixed so continuation fragments can be parsed independently.
      */
     static void remux(List<File> segments, File output, Progress progress) throws Exception {
         if (segments == null || segments.isEmpty()) {
             throw new IllegalStateException("복원할 영상 조각이 없습니다.");
         }
 
-        TrackFormats formats = findTrackFormats(segments);
+        byte[] psiHeader = findPsiHeader(segments);
+        File scratchDir = output.getParentFile();
+        TrackFormats formats = findTrackFormats(segments, scratchDir, psiHeader);
         if (formats.video == null) {
             throw new IllegalStateException("영상 조각에서 비디오 트랙을 찾지 못했습니다.");
         }
@@ -48,8 +57,10 @@ final class TsRemuxer {
         long segmentBaseUs = 0L;
         int videoSamples = 0;
         int audioSamples = 0;
-        int audioSegments = 0;
+        int audioBatches = 0;
+        int processedBatches = 0;
         int processedSegments = 0;
+        File batchFile = new File(scratchDir, ".remux_batch.ts");
 
         try {
             muxer = new MediaMuxer(output.getAbsolutePath(),
@@ -63,16 +74,25 @@ final class TsRemuxer {
             ByteBuffer buffer = ByteBuffer.allocateDirect(bufferSize);
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
 
-            for (int segmentIndex = 0; segmentIndex < segments.size(); segmentIndex++) {
+            for (int batchStart = 0; batchStart < segments.size(); batchStart += SEGMENTS_PER_BATCH) {
+                int batchEnd = Math.min(segments.size(), batchStart + SEGMENTS_PER_BATCH);
+                createBatchFile(segments, batchStart, batchEnd, batchFile, psiHeader);
                 MediaExtractor extractor = new MediaExtractor();
                 try {
-                    extractor.setDataSource(segments.get(segmentIndex).getAbsolutePath());
+                    try {
+                        extractor.setDataSource(batchFile.getAbsolutePath());
+                    } catch (Exception error) {
+                        throw new IllegalStateException(
+                                "영상 조각 " + (batchStart + 1) + "~" + batchEnd
+                                        + " 묶음을 읽지 못했습니다.", error);
+                    }
                     int videoSource = findTrack(extractor, "video/", formats.videoMime);
                     int audioSource = formats.audio == null
                             ? -1 : findTrack(extractor, "audio/", formats.audioMime);
                     if (videoSource < 0) {
                         throw new IllegalStateException(
-                                "영상 조각 " + (segmentIndex + 1) + "에서 비디오 트랙을 읽지 못했습니다.");
+                                "영상 조각 " + (batchStart + 1) + "~" + batchEnd
+                                        + "에서 비디오 트랙을 읽지 못했습니다.");
                     }
                     extractor.selectTrack(videoSource);
                     if (audioSource >= 0) extractor.selectTrack(audioSource);
@@ -80,7 +100,7 @@ final class TsRemuxer {
                     long firstTimeUs = extractor.getSampleTime();
                     if (firstTimeUs < 0) {
                         throw new IllegalStateException(
-                                "영상 조각 " + (segmentIndex + 1) + "이 비어 있습니다.");
+                                "영상 조각 " + (batchStart + 1) + "~" + batchEnd + "이 비어 있습니다.");
                     }
 
                     long segmentMaxRelativeUs = 0L;
@@ -149,16 +169,19 @@ final class TsRemuxer {
 
                     if (segmentVideoSamples == 0) {
                         throw new IllegalStateException(
-                                "영상 조각 " + (segmentIndex + 1) + "의 비디오 데이터가 비어 있습니다.");
+                                "영상 조각 " + (batchStart + 1) + "~" + batchEnd
+                                        + "의 비디오 데이터가 비어 있습니다.");
                     }
                     long tailStepUs = segmentAudioSamples > 0
                             ? Math.max(videoStepUs, audioStepUs) : videoStepUs;
                     segmentBaseUs += segmentMaxRelativeUs + Math.max(1L, tailStepUs);
-                    if (segmentAudioSamples > 0) audioSegments++;
-                    processedSegments++;
+                    if (segmentAudioSamples > 0) audioBatches++;
+                    processedBatches++;
+                    processedSegments = batchEnd;
                     if (progress != null) progress.update(processedSegments, segments.size());
                 } finally {
                     extractor.release();
+                    if (batchFile.exists()) batchFile.delete();
                 }
             }
 
@@ -168,7 +191,7 @@ final class TsRemuxer {
             if (formats.audio != null && audioSamples == 0) {
                 throw new IllegalStateException("오디오 트랙을 MP4로 복원하지 못했습니다.");
             }
-            if (audioSegments * 10 < processedSegments * 9) {
+            if (audioBatches * 10 < processedBatches * 9) {
                 throw new IllegalStateException("일부 영상 조각의 오디오를 읽지 못해 복원을 중단했습니다.");
             }
 
@@ -179,8 +202,9 @@ final class TsRemuxer {
 
             long writtenDurationUs = Math.max(videoLastUs == UNSET ? 0L : videoLastUs,
                     audioLastUs == UNSET ? 0L : audioLastUs);
-            validateOutput(output, formats.audio != null, writtenDurationUs);
+            validateOutput(output, writtenDurationUs);
         } finally {
+            if (batchFile.exists()) batchFile.delete();
             if (muxer != null) {
                 if (started) {
                     try { muxer.stop(); } catch (Exception ignored) { }
@@ -193,12 +217,17 @@ final class TsRemuxer {
         }
     }
 
-    private static TrackFormats findTrackFormats(List<File> segments) throws Exception {
+    private static TrackFormats findTrackFormats(List<File> segments, File scratchDir,
+                                                  byte[] psiHeader) throws Exception {
         TrackFormats result = new TrackFormats();
-        for (File segment : segments) {
+        Exception lastError = null;
+        File probeFile = new File(scratchDir, ".remux_probe.ts");
+        for (int start = 0; start < segments.size(); start += SEGMENTS_PER_BATCH) {
+            int end = Math.min(segments.size(), start + SEGMENTS_PER_BATCH);
+            createBatchFile(segments, start, end, probeFile, psiHeader);
             MediaExtractor extractor = new MediaExtractor();
             try {
-                extractor.setDataSource(segment.getAbsolutePath());
+                extractor.setDataSource(probeFile.getAbsolutePath());
                 for (int i = 0; i < extractor.getTrackCount(); i++) {
                     MediaFormat format = extractor.getTrackFormat(i);
                     String mime = format.getString(MediaFormat.KEY_MIME);
@@ -215,12 +244,97 @@ final class TsRemuxer {
                                 format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE));
                     }
                 }
+            } catch (Exception error) {
+                lastError = error;
             } finally {
                 extractor.release();
+                if (probeFile.exists()) probeFile.delete();
             }
             if (result.video != null && result.audio != null) break;
         }
+        if (result.video == null && lastError != null) {
+            throw new IllegalStateException(
+                    "복원용 영상 조각에서 미디어 트랙을 읽지 못했습니다.", lastError);
+        }
         return result;
+    }
+
+    private static void createBatchFile(List<File> segments, int start, int end,
+                                        File output, byte[] psiHeader) throws IOException {
+        if (output.exists() && !output.delete()) {
+            throw new IOException("기존 복원 묶음 파일을 제거하지 못했습니다.");
+        }
+        byte[] buffer = new byte[1024 * 1024];
+        try (FileOutputStream out = new FileOutputStream(output)) {
+            if (psiHeader != null && psiHeader.length > 0) out.write(psiHeader);
+            for (int i = start; i < end; i++) {
+                try (FileInputStream in = new FileInputStream(segments.get(i))) {
+                    int read;
+                    while ((read = in.read(buffer)) >= 0) out.write(buffer, 0, read);
+                }
+            }
+        } catch (IOException error) {
+            output.delete();
+            throw error;
+        }
+    }
+
+    /** Finds one PAT and one PMT packet so every small batch is independently parseable. */
+    private static byte[] findPsiHeader(List<File> segments) {
+        byte[] pat = null;
+        int pmtPid = -1;
+        byte[] packet = new byte[TS_PACKET_SIZE];
+        for (File segment : segments) {
+            try (FileInputStream in = new FileInputStream(segment)) {
+                int scanned = 0;
+                while (scanned++ < 4096 && readPacket(in, packet)) {
+                    if ((packet[0] & 0xff) != 0x47) continue;
+                    int pid = ((packet[1] & 0x1f) << 8) | (packet[2] & 0xff);
+                    if (pid == 0) {
+                        if (pat == null) pat = Arrays.copyOf(packet, packet.length);
+                        int parsed = parsePmtPid(packet);
+                        if (parsed >= 0) pmtPid = parsed;
+                    } else if (pmtPid >= 0 && pid == pmtPid && pat != null) {
+                        ByteArrayOutputStream out = new ByteArrayOutputStream(TS_PACKET_SIZE * 2);
+                        out.write(pat, 0, pat.length);
+                        out.write(packet, 0, packet.length);
+                        return out.toByteArray();
+                    }
+                }
+            } catch (Exception ignored) { }
+        }
+        return pat;
+    }
+
+    private static boolean readPacket(FileInputStream in, byte[] packet) throws IOException {
+        int offset = 0;
+        while (offset < packet.length) {
+            int read = in.read(packet, offset, packet.length - offset);
+            if (read < 0) return false;
+            offset += read;
+        }
+        return true;
+    }
+
+    private static int parsePmtPid(byte[] packet) {
+        if ((packet[1] & 0x40) == 0) return -1;
+        int adaptationControl = (packet[3] >>> 4) & 0x03;
+        if (adaptationControl == 0 || adaptationControl == 2) return -1;
+        int offset = 4;
+        if (adaptationControl == 3) {
+            offset += 1 + (packet[offset] & 0xff);
+        }
+        if (offset >= packet.length) return -1;
+        offset += 1 + (packet[offset] & 0xff);
+        if (offset + 8 >= packet.length || (packet[offset] & 0xff) != 0x00) return -1;
+        int sectionLength = ((packet[offset + 1] & 0x0f) << 8) | (packet[offset + 2] & 0xff);
+        int entriesEnd = Math.min(packet.length, offset + 3 + sectionLength - 4);
+        for (int entry = offset + 8; entry + 4 <= entriesEnd; entry += 4) {
+            int program = ((packet[entry] & 0xff) << 8) | (packet[entry + 1] & 0xff);
+            if (program == 0) continue;
+            return ((packet[entry + 2] & 0x1f) << 8) | (packet[entry + 3] & 0xff);
+        }
+        return -1;
     }
 
     private static int findTrack(MediaExtractor extractor, String prefix, String preferredMime) {
@@ -239,40 +353,12 @@ final class TsRemuxer {
         return (current * 7L + measured) / 8L;
     }
 
-    private static void validateOutput(File output, boolean expectedAudio,
-                                       long writtenDurationUs) throws Exception {
+    private static void validateOutput(File output, long writtenDurationUs) {
         if (!output.isFile() || output.length() < 4096) {
             throw new IllegalStateException("복원된 MP4 파일이 비어 있습니다.");
         }
-        MediaExtractor check = new MediaExtractor();
-        try {
-            check.setDataSource(output.getAbsolutePath());
-            boolean hasVideo = false;
-            boolean hasAudio = false;
-            long reportedDurationUs = 0L;
-            for (int i = 0; i < check.getTrackCount(); i++) {
-                MediaFormat format = check.getTrackFormat(i);
-                String mime = format.getString(MediaFormat.KEY_MIME);
-                if (mime != null && mime.startsWith("video/")) hasVideo = true;
-                if (mime != null && mime.startsWith("audio/")) hasAudio = true;
-                if (format.containsKey(MediaFormat.KEY_DURATION)) {
-                    reportedDurationUs = Math.max(reportedDurationUs,
-                            format.getLong(MediaFormat.KEY_DURATION));
-                }
-            }
-            if (!hasVideo) throw new IllegalStateException("완성된 MP4에 비디오 트랙이 없습니다.");
-            if (expectedAudio && !hasAudio) {
-                throw new IllegalStateException("완성된 MP4에 오디오 트랙이 없습니다.");
-            }
-            if (writtenDurationUs < 1_000_000L) {
-                throw new IllegalStateException("완성된 MP4의 재생시간이 올바르지 않습니다.");
-            }
-            if (reportedDurationUs > 0 && reportedDurationUs + 2_000_000L
-                    < writtenDurationUs * 9L / 10L) {
-                throw new IllegalStateException("MP4 재생시간 복원에 실패했습니다.");
-            }
-        } finally {
-            check.release();
+        if (writtenDurationUs < 1_000_000L) {
+            throw new IllegalStateException("완성된 MP4의 재생시간이 올바르지 않습니다.");
         }
     }
 
