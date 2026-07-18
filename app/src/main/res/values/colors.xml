@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="green">#00C73C</color>
+    <color name="green_dark">#00A834</color>
+    <color name="background">#F5F6F7</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="text_primary">#171717</color>
+    <color name="text_secondary">#707070</color>
+    <color name="divider">#E8E8E8</color>
+    <color name="danger">#C62828</color>
+</resources>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/main_root" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@color/background" android:orientation="vertical">
+    <FrameLayout android:id="@+id/content" android:layout_width="match_parent"
+        android:layout_height="0dp" android:layout_weight="1" />
+    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="64dp"
+        android:background="@color/surface" android:gravity="center" android:orientation="horizontal">
+        <Button android:id="@+id/nav_tvroom" style="?android:attr/borderlessButtonStyle"
+            android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+            android:text="티비룸" android:textAllCaps="false" android:textStyle="bold" />
+        <Button android:id="@+id/nav_downloads" style="?android:attr/borderlessButtonStyle"
+            android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+            android:text="다운로드" android:textAllCaps="false" android:textStyle="bold" />
+        <Button android:id="@+id/nav_settings" style="?android:attr/borderlessButtonStyle"
+            android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+            android:text="설정" android:textAllCaps="false" android:textStyle="bold" />
+    </LinearLayout>
+</LinearLayout>

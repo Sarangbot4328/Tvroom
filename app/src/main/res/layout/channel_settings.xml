@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/background">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:padding="20dp">
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="설정" android:textColor="@color/text_primary" android:textSize="24sp" android:textStyle="bold" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="22dp" android:background="@color/surface"
+            android:orientation="vertical" android:padding="18dp">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="티비룸 주소" android:textColor="@color/text_primary" android:textSize="17sp" android:textStyle="bold" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="7dp" android:text="주소가 변경되면 새 주소를 입력하고 저장하세요."
+                android:textColor="@color/text_secondary" android:textSize="13sp" />
+            <EditText android:id="@+id/tvroom_url" android:layout_width="match_parent"
+                android:layout_height="52dp" android:layout_marginTop="10dp"
+                android:hint="https://tvroom20.org/" android:inputType="textUri" android:maxLines="1" />
+            <Button android:id="@+id/save_tvroom_url" android:layout_width="match_parent"
+                android:layout_height="48dp" android:layout_marginTop="8dp"
+                android:text="티비룸 주소 저장" android:textAllCaps="false" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="22dp" android:background="@color/surface"
+            android:orientation="vertical" android:padding="18dp">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="임시 파일 관리" android:textColor="@color/text_primary"
+                android:textSize="17sp" android:textStyle="bold" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="7dp"
+                android:text="중단·실패한 다운로드 조각과 변환 캐시만 삭제합니다. 완료된 영상과 썸네일은 삭제하지 않습니다."
+                android:textColor="@color/text_secondary" android:textSize="13sp" />
+            <Button android:id="@+id/cleanup_temp_files" android:layout_width="match_parent"
+                android:layout_height="50dp" android:layout_marginTop="12dp"
+                android:text="임시 파일 삭제" android:textAllCaps="false" />
+            <TextView android:id="@+id/cleanup_temp_status" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="8dp"
+                android:textColor="@color/text_secondary" android:textSize="12sp" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="22dp" android:background="@color/surface"
+            android:orientation="vertical" android:padding="18dp">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="앱 정보" android:textColor="@color/text_primary"
+                android:textSize="17sp" android:textStyle="bold" />
+            <TextView android:id="@+id/app_version" android:layout_width="wrap_content"
+                android:layout_height="wrap_content" android:layout_marginTop="10dp"
+                android:text="버전 1.0.0" android:textColor="@color/text_secondary" android:textSize="14sp" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>
