@@ -2,7 +2,6 @@ package com.tvroom.downloader.download;
 
 import com.tvroom.downloader.web.CaptureState;
 
-import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -41,24 +40,26 @@ final class HlsDownloader {
     }
 
     void download(File workDir, File mp4Output) throws Exception {
-        File joinedTs = new File(workDir, "joined.ts.part");
         Exception last = null;
         for (int i = job.m3u8Urls.size() - 1; i >= 0; i--) {
             checkCancelled();
             try {
                 Playlist playlist = resolvePlaylist(job.m3u8Urls.get(i));
-                downloadPlaylist(playlist, joinedTs);
+                List<File> segments = downloadPlaylist(playlist,
+                        new File(workDir, "playlist_" + i));
                 progress.update("MP4로 복원 중…", 92);
-                TsRemuxer.remux(joinedTs, mp4Output);
+                remux(segments, mp4Output);
                 return;
             } catch (InterruptedException error) { throw error; }
-            catch (Exception error) { last = error; joinedTs.delete(); }
+            catch (Exception error) { last = error; mp4Output.delete(); }
         }
         String segment = firstSegmentList(job.segmentUrls);
         if (segment != null && !job.keyHex.isEmpty()) {
-            downloadSegmentList(segment, joinedTs, hex(job.keyHex), ivOrZero(job.ivHex));
+            List<File> segments = downloadSegmentList(segment,
+                    new File(workDir, "captured_segments"),
+                    hex(job.keyHex), ivOrZero(job.ivHex));
             progress.update("MP4로 복원 중…", 92);
-            TsRemuxer.remux(joinedTs, mp4Output);
+            remux(segments, mp4Output);
             return;
         }
         throw new IllegalStateException(last == null ? "캡처된 스트림을 다운로드하지 못했습니다." : clean(last));
@@ -93,7 +94,7 @@ final class HlsDownloader {
         return out;
     }
 
-    private void downloadPlaylist(Playlist playlist, File output) throws Exception {
+    private List<File> downloadPlaylist(Playlist playlist, File segmentDir) throws Exception {
         String custom = firstSegmentList(playlist.segments);
         byte[] capturedKey = job.keyHex.isEmpty() ? null : hex(job.keyHex);
         byte[] key = capturedKey;
@@ -103,50 +104,76 @@ final class HlsDownloader {
         byte[] iv = playlist.iv != null ? playlist.iv : ivOrZero(job.ivHex);
         if (custom != null) {
             if (key == null) throw new IllegalStateException("segment_list 암호화 키를 찾지 못했습니다.");
-            downloadSegmentList(custom, output, key, iv);
-            return;
+            return downloadSegmentList(custom, segmentDir, key, iv);
         }
-        try (BufferedOutputStream out = new BufferedOutputStream(new FileOutputStream(output))) {
-            int total = playlist.segments.size();
-            for (int i = 0; i < total; i++) {
-                checkCancelled();
-                progress.update("영상 조각 다운로드 " + (i + 1) + "/" + total,
-                        12 + (int) ((i + 1L) * 75 / total));
-                byte[] data = fetch(playlist.segments.get(i), job.pageUrl, false);
-                if (key != null && playlist.encrypted) data = decryptBest(data, key, iv,
-                        playlist.mediaSequence + i);
-                else data = normalizeTs(data);
-                out.write(data);
-            }
+        ensureDirectory(segmentDir);
+        List<File> parts = new ArrayList<>();
+        int total = playlist.segments.size();
+        for (int i = 0; i < total; i++) {
+            checkCancelled();
+            progress.update("영상 조각 다운로드 " + (i + 1) + "/" + total,
+                    12 + (int) ((i + 1L) * 75 / total));
+            byte[] data = fetch(playlist.segments.get(i), job.pageUrl, false);
+            if (key != null && playlist.encrypted) data = decryptBest(data, key, iv,
+                    playlist.mediaSequence + i);
+            else data = normalizeTs(data);
+            File part = new File(segmentDir, String.format(Locale.US, "seg_%06d.ts", i));
+            writePart(part, data);
+            parts.add(part);
         }
+        return parts;
     }
 
-    private void downloadSegmentList(String seedUrl, File output, byte[] key, byte[] iv) throws Exception {
+    private List<File> downloadSegmentList(String seedUrl, File segmentDir,
+                                           byte[] key, byte[] iv) throws Exception {
         Matcher matcher = SEGMENT_LIST.matcher(seedUrl);
         if (!matcher.matches()) throw new IllegalStateException("segment_list 주소 형식을 인식하지 못했습니다.");
         String prefix = matcher.group(1), suffix = matcher.group(3);
         int captured = Integer.parseInt(matcher.group(2));
         int start = probe(prefix + 0 + suffix) ? 0 : captured;
         int misses = 0, saved = 0, index = start;
-        try (BufferedOutputStream out = new BufferedOutputStream(new FileOutputStream(output))) {
-            while (index < start + 10000 && misses < 3) {
-                checkCancelled();
-                String url = prefix + index + suffix;
-                byte[] encrypted;
-                try { encrypted = fetch(url, job.pageUrl, true); }
-                catch (HttpStatusException error) {
-                    if (error.code == 404 || error.code == 403) { misses++; index++; continue; }
-                    throw error;
-                }
-                misses = 0;
-                byte[] ts = decryptBest(encrypted, key, iv, index);
-                out.write(ts); saved++;
-                int shown = Math.min(88, 12 + saved / 2);
-                progress.update("암호화 영상 조각 " + saved + "개 복원", shown);
-                index++;
+        ensureDirectory(segmentDir);
+        List<File> parts = new ArrayList<>();
+        while (index < start + 10000 && misses < 3) {
+            checkCancelled();
+            String url = prefix + index + suffix;
+            byte[] encrypted;
+            try { encrypted = fetch(url, job.pageUrl, true); }
+            catch (HttpStatusException error) {
+                if (error.code == 404 || error.code == 403) { misses++; index++; continue; }
+                throw error;
             }
+            misses = 0;
+            byte[] ts = decryptBest(encrypted, key, iv, index);
+            File part = new File(segmentDir, String.format(Locale.US, "seg_%06d.ts", index));
+            writePart(part, ts);
+            parts.add(part);
+            saved++;
+            int shown = Math.min(88, 12 + saved / 2);
+            progress.update("암호화 영상 조각 " + saved + "개 복원", shown);
+            index++;
         }
         if (saved == 0) throw new IllegalStateException("복원 가능한 segment_list 조각이 없습니다.");
+        return parts;
+    }
+
+    private static void ensureDirectory(File directory) {
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw new IllegalStateException("영상 조각 임시 폴더를 만들지 못했습니다.");
+        }
+    }
+
+    private static void writePart(File output, byte[] data) throws Exception {
+        try (FileOutputStream out = new FileOutputStream(output)) {
+            out.write(data);
+        }
+    }
+
+    private void remux(List<File> segments, File output) throws Exception {
+        TsRemuxer.remux(segments, output, (completed, total) -> {
+            int percent = 92 + (int) (completed * 7L / Math.max(1, total));
+            progress.update("MP4 복원 " + completed + "/" + total, percent);
+        });
     }
 
     private boolean probe(String url) throws Exception {
