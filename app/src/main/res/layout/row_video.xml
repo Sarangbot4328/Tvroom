@@ -19,7 +19,7 @@
                 android:layout_weight="1" android:text="재생" android:textAllCaps="false" />
             <Button android:id="@+id/delete" android:layout_width="0dp" android:layout_height="38dp"
                 android:layout_marginStart="6dp" android:layout_weight="1" android:text="삭제"
-                android:textAllCaps="false" android:textColor="@color/danger" />
+                android:textAllCaps="false" android:textColor="#C62828" />
         </LinearLayout>
     </LinearLayout>
 </LinearLayout>

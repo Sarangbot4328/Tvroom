@@ -54,6 +54,14 @@ public final class LibraryDatabase extends SQLiteOpenHelper {
         getWritableDatabase().update("videos", values, "status IN ('queued','downloading')", null);
     }
 
+    public void stopQueuedDownloads() {
+        ContentValues values = new ContentValues();
+        values.put("status", "stopped");
+        values.put("progress", 0);
+        values.put("error", "대기열이 중단되었습니다.");
+        getWritableDatabase().update("videos", values, "status='queued'", null);
+    }
+
     public void complete(String id, String thumbnailPath, String filePath) {
         ContentValues values = new ContentValues();
         values.put("status", "complete");

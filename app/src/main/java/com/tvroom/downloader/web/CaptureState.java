@@ -99,7 +99,16 @@ public final class CaptureState {
     }
 
     public synchronized boolean ready() {
-        return !m3u8.isEmpty() || (!segments.isEmpty() && !keyHex.isEmpty());
+        if (streamReferers.isEmpty() || segments.isEmpty()) return false;
+        boolean customSegments = false;
+        for (String value : segments) {
+            if (value.toLowerCase(java.util.Locale.US).contains("segment_list")) {
+                customSegments = true;
+                break;
+            }
+        }
+        if (customSegments && keyHex.isEmpty()) return false;
+        return !m3u8.isEmpty() || customSegments;
     }
 
     public synchronized List<String> knownUrls() {

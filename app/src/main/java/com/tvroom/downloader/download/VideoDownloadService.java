@@ -6,12 +6,14 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 
 import androidx.annotation.Nullable;
-import androidx.core.content.ContextCompat;
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 
 import com.tvroom.downloader.MainActivity;
 import com.tvroom.downloader.R;
@@ -27,6 +29,8 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayDeque;
+import java.util.Queue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -40,20 +44,34 @@ public final class VideoDownloadService extends Service {
     private static final String CHANNEL = "tvroom_download";
     private static final int NOTIFICATION_ID = 7201;
     private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
+
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
+    private final AtomicBoolean stopRequested = new AtomicBoolean(false);
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final Object queueLock = new Object();
+    private final Queue<String> pendingJobs = new ArrayDeque<>();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private boolean processing;
     private volatile HttpURLConnection activeConnection;
     private volatile Thread worker;
     private PowerManager.WakeLock wakeLock;
 
     public static boolean isRunning() { return RUNNING.get(); }
 
-    public static void start(Context context, CaptureState.Snapshot snapshot) {
-        LibraryDatabase.get(context).upsert(new VideoItem(snapshot.id, snapshot.title, snapshot.pageUrl,
-                null, null, "queued", 0, ""));
+    public static boolean start(Context context, CaptureState.Snapshot snapshot) {
+        LibraryDatabase database = LibraryDatabase.get(context);
+        synchronized (VideoDownloadService.class) {
+            VideoItem existing = database.getItem(snapshot.id);
+            if (existing != null && ("queued".equals(existing.status) || "downloading".equals(existing.status))) {
+                return false;
+            }
+            database.upsert(new VideoItem(snapshot.id, snapshot.title, snapshot.pageUrl,
+                    null, null, "queued", 0, ""));
+        }
         Intent intent = new Intent(context, VideoDownloadService.class).setAction(ACTION_START)
                 .putExtra(EXTRA_JOB, snapshot.toJson());
         ContextCompat.startForegroundService(context, intent);
+        return true;
     }
 
     public static void stop(Context context) {
@@ -62,27 +80,93 @@ public final class VideoDownloadService extends Service {
 
     @Override public void onCreate() {
         super.onCreate();
-        NotificationChannel channel = new NotificationChannel(CHANNEL, "영상 다운로드", NotificationManager.IMPORTANCE_LOW);
+        NotificationChannel channel = new NotificationChannel(
+                CHANNEL, "영상 다운로드", NotificationManager.IMPORTANCE_LOW);
         getSystemService(NotificationManager.class).createNotificationChannel(channel);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
-            cancelled.set(true); HttpURLConnection connection = activeConnection;
-            if (connection != null) connection.disconnect();
-            Thread thread = worker; if (thread != null) thread.interrupt();
-            updateNotification("다운로드 중단 중…", 0); return START_NOT_STICKY;
+            requestStop();
+            return START_NOT_STICKY;
         }
         if (intent == null || !ACTION_START.equals(intent.getAction())) return START_NOT_STICKY;
-        if (!RUNNING.compareAndSet(false, true)) return START_NOT_STICKY;
-        startForeground(NOTIFICATION_ID, notification("다운로드 준비 중…", 0));
         String raw = intent.getStringExtra(EXTRA_JOB);
-        executor.execute(() -> runJob(raw));
+        if (raw == null || raw.isEmpty()) return START_NOT_STICKY;
+
+        boolean begin;
+        int waiting;
+        synchronized (queueLock) {
+            pendingJobs.offer(raw);
+            waiting = pendingJobs.size();
+            begin = !processing;
+            if (begin) processing = true;
+        }
+        RUNNING.set(true);
+        if (begin) {
+            stopRequested.set(false);
+            cancelled.set(false);
+            startForeground(NOTIFICATION_ID, notification("다운로드 준비 중", 0));
+            executor.execute(this::drainQueue);
+        } else {
+            broadcast("다운로드 대기열에 추가했습니다. 대기 " + waiting + "개");
+        }
         return START_NOT_STICKY;
     }
 
-    private void runJob(String raw) {
+    private void drainQueue() {
         worker = Thread.currentThread();
+        while (!stopRequested.get()) {
+            String raw;
+            synchronized (queueLock) {
+                raw = pendingJobs.poll();
+                if (raw == null) processing = false;
+            }
+            if (raw == null || stopRequested.get()) break;
+            cancelled.set(false);
+            runJob(raw);
+        }
+        synchronized (queueLock) {
+            if (stopRequested.get()) pendingJobs.clear();
+            processing = false;
+        }
+        if (worker == Thread.currentThread()) worker = null;
+        mainHandler.post(this::finishIfIdle);
+    }
+
+    private void finishIfIdle() {
+        boolean beginAgain = false;
+        synchronized (queueLock) {
+            if (!pendingJobs.isEmpty() && !processing && !stopRequested.get()) {
+                processing = true;
+                beginAgain = true;
+            } else if (processing || !pendingJobs.isEmpty()) {
+                return;
+            }
+        }
+        if (beginAgain) {
+            executor.execute(this::drainQueue);
+            return;
+        }
+        RUNNING.set(false);
+        stopForeground(STOP_FOREGROUND_REMOVE);
+        stopSelf();
+    }
+
+    private void requestStop() {
+        stopRequested.set(true);
+        cancelled.set(true);
+        synchronized (queueLock) { pendingJobs.clear(); }
+        LibraryDatabase.get(this).stopQueuedDownloads();
+        HttpURLConnection connection = activeConnection;
+        if (connection != null) connection.disconnect();
+        Thread thread = worker;
+        if (thread != null) thread.interrupt();
+        updateNotification("다운로드 중단 중", 0);
+        broadcast("현재 다운로드와 대기열을 중단합니다.");
+    }
+
+    private void runJob(String raw) {
         CaptureState.Snapshot job = null;
         File workDir = null;
         try {
@@ -90,7 +174,7 @@ public final class VideoDownloadService extends Service {
             acquireWakeLock();
             workDir = TempFiles.jobDir(this, job.id);
             LibraryDatabase.get(this).updateProgress(job.id, "downloading", 1, "");
-            broadcast("다운로드 준비 중…");
+            broadcast("다운로드 준비 중");
             String thumbnail = downloadThumbnail(job);
             LibraryDatabase.get(this).updateThumbnail(job.id, thumbnail);
             broadcast("영상 정보를 저장했습니다. 다운로드를 시작합니다.");
@@ -98,7 +182,8 @@ public final class VideoDownloadService extends Service {
             CaptureState.Snapshot finalJob = job;
             new HlsDownloader(job, (message, percent) -> {
                 LibraryDatabase.get(this).updateProgress(finalJob.id, "downloading", percent, "");
-                updateNotification(message, percent); broadcast(message);
+                updateNotification(message, percent);
+                broadcast(message);
             }, new HlsDownloader.Cancellation() {
                 @Override public boolean cancelled() { return cancelled.get(); }
                 @Override public void connection(HttpURLConnection connection) { activeConnection = connection; }
@@ -107,19 +192,26 @@ public final class VideoDownloadService extends Service {
             File finalFile = finalVideoFile(job.title);
             publish(tempMp4, finalFile);
             LibraryDatabase.get(this).complete(job.id, thumbnail, finalFile.getAbsolutePath());
-            updateNotification("다운로드 완료", 100); broadcast("다운로드 완료 · " + job.title);
+            updateNotification("다운로드 완료", 100);
+            broadcast("다운로드 완료 · " + job.title);
         } catch (InterruptedException error) {
-            if (job != null) LibraryDatabase.get(this).updateProgress(job.id, "stopped", 0, "사용자가 중단했습니다.");
+            if (job != null) LibraryDatabase.get(this).updateProgress(
+                    job.id, "stopped", 0, "사용자가 다운로드를 중단했습니다.");
             broadcast("다운로드를 중단하고 임시 파일을 삭제했습니다.");
         } catch (Exception error) {
-            String message = error.getMessage() == null ? "다운로드에 실패했습니다." : error.getMessage();
-            if (job != null) LibraryDatabase.get(this).updateProgress(job.id, "error", 0, message);
-            broadcast("다운로드 실패 · " + message);
+            if (cancelled.get() || stopRequested.get()) {
+                if (job != null) LibraryDatabase.get(this).updateProgress(
+                        job.id, "stopped", 0, "사용자가 다운로드를 중단했습니다.");
+                broadcast("다운로드를 중단하고 임시 파일을 삭제했습니다.");
+            } else {
+                String message = error.getMessage() == null ? "다운로드에 실패했습니다." : error.getMessage();
+                if (job != null) LibraryDatabase.get(this).updateProgress(job.id, "error", 0, message);
+                broadcast("다운로드 실패 · " + message);
+            }
         } finally {
             activeConnection = null;
             if (workDir != null && job != null) TempFiles.deleteJob(this, job.id);
-            releaseWakeLock(); RUNNING.set(false); worker = null;
-            stopForeground(STOP_FOREGROUND_REMOVE); stopSelf();
+            releaseWakeLock();
         }
     }
 
@@ -130,7 +222,8 @@ public final class VideoDownloadService extends Service {
         if (!root.exists() && !root.mkdirs()) throw new IllegalStateException("영상 저장 폴더를 만들지 못했습니다.");
         String safe = title.replaceAll("[\\\\/:*?\"<>|]", "_").replaceAll("\\s+", " ").trim();
         if (safe.isEmpty()) safe = "tvroom-video";
-        File file = new File(root, safe + ".mp4"); int suffix = 1;
+        File file = new File(root, safe + ".mp4");
+        int suffix = 1;
         while (file.exists()) file = new File(root, safe + "_" + suffix++ + ".mp4");
         return file;
     }
@@ -140,14 +233,16 @@ public final class VideoDownloadService extends Service {
         publishing.delete();
         try (InputStream in = Files.newInputStream(source.toPath());
              FileOutputStream out = new FileOutputStream(publishing)) {
-            byte[] buffer = new byte[1024 * 1024]; int read;
+            byte[] buffer = new byte[1024 * 1024];
+            int read;
             while ((read = in.read(buffer)) >= 0) {
                 if (cancelled.get()) throw new InterruptedException("다운로드 중단");
                 out.write(buffer, 0, read);
             }
             out.getFD().sync();
         } catch (Exception error) {
-            publishing.delete(); throw error;
+            publishing.delete();
+            throw error;
         }
         Files.move(publishing.toPath(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING);
         source.delete();
@@ -158,23 +253,30 @@ public final class VideoDownloadService extends Service {
         HttpURLConnection connection = null;
         try {
             connection = (HttpURLConnection) new URL(job.thumbnailUrl).openConnection();
-            connection.setConnectTimeout(15000); connection.setReadTimeout(20000);
+            connection.setConnectTimeout(15000);
+            connection.setReadTimeout(20000);
             connection.setRequestProperty("Referer", job.pageUrl);
             connection.setRequestProperty("User-Agent", job.userAgent);
             if (!job.cookie.isEmpty()) connection.setRequestProperty("Cookie", job.cookie);
-            File root = new File(getFilesDir(), "thumbnails"); if (!root.exists()) root.mkdirs();
+            File root = new File(getFilesDir(), "thumbnails");
+            if (!root.exists()) root.mkdirs();
             File output = new File(root, job.id + ".jpg");
             try (InputStream in = connection.getInputStream(); FileOutputStream out = new FileOutputStream(output)) {
-                byte[] buffer = new byte[32 * 1024]; int read;
+                byte[] buffer = new byte[32 * 1024];
+                int read;
                 while ((read = in.read(buffer)) >= 0) out.write(buffer, 0, read);
             }
             return output.getAbsolutePath();
-        } catch (Exception ignored) { return null; }
-        finally { if (connection != null) connection.disconnect(); }
+        } catch (Exception ignored) {
+            return null;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
     }
 
     private void broadcast(String message) {
-        sendBroadcast(new Intent(ACTION_PROGRESS).setPackage(getPackageName()).putExtra(EXTRA_MESSAGE, message));
+        sendBroadcast(new Intent(ACTION_PROGRESS).setPackage(getPackageName())
+                .putExtra(EXTRA_MESSAGE, message));
     }
 
     private android.app.Notification notification(String message, int progress) {
@@ -184,27 +286,50 @@ public final class VideoDownloadService extends Service {
                 new Intent(this, VideoDownloadService.class).setAction(ACTION_STOP),
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL)
-                .setSmallIcon(R.drawable.ic_app).setContentTitle("티비룸 다운로더")
-                .setContentText(message).setOnlyAlertOnce(true).setOngoing(true)
-                .setContentIntent(pending).addAction(0, "중단", stop);
-        if (progress > 0) builder.setProgress(100, progress, false); else builder.setProgress(0, 0, true);
+                .setSmallIcon(R.drawable.ic_app)
+                .setContentTitle("티비룸 다운로더")
+                .setContentText(message)
+                .setOnlyAlertOnce(true)
+                .setOngoing(true)
+                .setContentIntent(pending)
+                .addAction(0, "중단", stop);
+        if (progress > 0) builder.setProgress(100, progress, false);
+        else builder.setProgress(0, 0, true);
         return builder.build();
     }
 
     private void updateNotification(String message, int progress) {
-        getSystemService(NotificationManager.class).notify(NOTIFICATION_ID, notification(message, progress));
+        getSystemService(NotificationManager.class).notify(
+                NOTIFICATION_ID, notification(message, progress));
     }
 
     private void acquireWakeLock() {
-        wakeLock = getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,
-                "tvroom:download"); wakeLock.acquire(6 * 60 * 60 * 1000L);
+        releaseWakeLock();
+        wakeLock = getSystemService(PowerManager.class).newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK, "tvroom:download");
+        wakeLock.acquire(6 * 60 * 60 * 1000L);
     }
-    private void releaseWakeLock() { if (wakeLock != null && wakeLock.isHeld()) wakeLock.release(); }
+
+    private void releaseWakeLock() {
+        if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        wakeLock = null;
+    }
 
     @Nullable @Override public IBinder onBind(Intent intent) { return null; }
+
     @Override public void onDestroy() {
-        cancelled.set(true); HttpURLConnection connection = activeConnection;
+        stopRequested.set(true);
+        cancelled.set(true);
+        synchronized (queueLock) {
+            pendingJobs.clear();
+            processing = false;
+        }
+        LibraryDatabase.get(this).stopQueuedDownloads();
+        HttpURLConnection connection = activeConnection;
         if (connection != null) connection.disconnect();
-        executor.shutdownNow(); releaseWakeLock(); RUNNING.set(false); super.onDestroy();
+        executor.shutdownNow();
+        releaseWakeLock();
+        RUNNING.set(false);
+        super.onDestroy();
     }
 }
