@@ -4,12 +4,14 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:allowBackup="false"
         android:icon="@drawable/ic_app"
         android:label="티비룸 다운로더"
+        android:roundIcon="@drawable/ic_app"
         android:supportsRtl="true"
         android:theme="@style/Theme.TVRoomDownloader"
         android:usesCleartextTraffic="false">
@@ -21,6 +23,7 @@
             android:supportsPictureInPicture="true" />
         <activity
             android:name=".MainActivity"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboardHidden"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -31,6 +34,11 @@
             android:name=".download.VideoDownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+        <service
+            android:name=".export.VideoExportService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProcessing"
             android:stopWithTask="false" />
     </application>
 </manifest>

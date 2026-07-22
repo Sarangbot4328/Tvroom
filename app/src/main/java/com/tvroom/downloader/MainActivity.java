@@ -2,12 +2,16 @@ package com.tvroom.downloader;
 
 import android.Manifest;
 import android.content.pm.PackageManager;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.FrameLayout;
 
 import androidx.activity.OnBackPressedCallback;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -26,10 +30,21 @@ public final class MainActivity extends AppCompatActivity {
     private TVRoomChannelView tvroomView;
     private DownloadChannelView downloadsView;
     private SettingsChannelView settingsView;
+    private ActivityResultLauncher<Uri> exportFolderPicker;
     private int selected;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        exportFolderPicker = registerForActivityResult(
+                new ActivityResultContracts.OpenDocumentTree(), uri -> {
+                    if (uri == null || downloadsView == null) return;
+                    try {
+                        getContentResolver().takePersistableUriPermission(uri,
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                        | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    } catch (Exception ignored) { }
+                    downloadsView.onExportFolderSelected(uri);
+                });
         if (!VideoDownloadService.isRunning()) {
             TempFiles.cleanup(this);
             LibraryDatabase.get(this).recoverInterruptedDownloads();
@@ -50,6 +65,11 @@ public final class MainActivity extends AppCompatActivity {
         requestNotificationPermission();
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override public void handleOnBackPressed() {
+                if (selected == 1 && downloadsView.cancelExportSelection()) return;
+                if (selected == 0 && tvroomView.isFullscreen()) {
+                    tvroomView.exitFullscreen();
+                    return;
+                }
                 if (selected != 0) showTvroom();
                 else if (tvroomView.canGoBack()) tvroomView.goBack();
                 else { setEnabled(false); getOnBackPressedDispatcher().onBackPressed(); }
@@ -59,6 +79,7 @@ public final class MainActivity extends AppCompatActivity {
 
     public void showDownloads() { selected = 1; downloadsView.refresh(); swap(downloadsView); tint(); }
     public void refreshDownloads() { if (downloadsView != null) downloadsView.refresh(); }
+    public void chooseExportFolder() { exportFolderPicker.launch(null); }
     private void showTvroom() { selected = 0; swap(tvroomView); tint(); }
     private void showSettings() { selected = 2; settingsView.refresh(); swap(settingsView); tint(); }
 

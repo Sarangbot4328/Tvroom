@@ -45,7 +45,7 @@
                 android:textSize="17sp" android:textStyle="bold" />
             <TextView android:id="@+id/app_version" android:layout_width="wrap_content"
                 android:layout_height="wrap_content" android:layout_marginTop="10dp"
-                android:text="버전 1.0.7" android:textColor="@color/text_secondary" android:textSize="14sp" />
+                android:text="버전 1.1.1" android:textColor="@color/text_secondary" android:textSize="14sp" />
         </LinearLayout>
     </LinearLayout>
 </ScrollView>

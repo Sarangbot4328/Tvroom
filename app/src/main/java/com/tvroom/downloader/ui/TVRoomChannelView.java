@@ -4,11 +4,17 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.ActivityInfo;
 import android.graphics.Color;
 import android.net.Uri;
 import android.net.http.SslError;
+import android.os.Build;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.RenderProcessGoneDetail;
@@ -52,12 +58,14 @@ public final class TVRoomChannelView extends FrameLayout {
     private final ProgressBar progress;
     private final TextView errorView;
     private final Button downloadButton;
-    private final Button testButton;
     private final Button moveButton;
     private final Button stopButton;
     private final CaptureState capture = new CaptureState();
     private boolean receiverRegistered;
     private boolean webViewUsable = true;
+    private View fullscreenView;
+    private WebChromeClient.CustomViewCallback fullscreenCallback;
+    private int previousOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
 
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) { updateButtons(); }
@@ -88,13 +96,11 @@ public final class TVRoomChannelView extends FrameLayout {
         LinearLayout actions = new LinearLayout(activity);
         actions.setGravity(Gravity.CENTER_VERTICAL);
         stopButton = button("중단", Color.rgb(198, 40, 40), 76);
-        moveButton = button("이동", Color.rgb(69, 90, 100), 64);
-        downloadButton = button("먼저 영상 재생", ContextCompat.getColor(activity, R.color.green), 110);
-        testButton = button("30초 테스트", Color.rgb(239, 108, 0), 108);
+        moveButton = button("이동", Color.rgb(69, 90, 100), 76);
+        downloadButton = button("먼저 영상 재생", ContextCompat.getColor(activity, R.color.green), 132);
         actions.addView(stopButton);
         actions.addView(moveButton);
         actions.addView(downloadButton);
-        actions.addView(testButton);
         for (int i = 1; i < actions.getChildCount(); i++) {
             LinearLayout.LayoutParams params =
                     (LinearLayout.LayoutParams) actions.getChildAt(i).getLayoutParams();
@@ -110,7 +116,6 @@ public final class TVRoomChannelView extends FrameLayout {
         configureWebView();
         moveButton.setOnClickListener(v -> showNavigation());
         downloadButton.setOnClickListener(v -> confirmDownload());
-        testButton.setOnClickListener(v -> confirmTestDownload());
         stopButton.setOnClickListener(v -> VideoDownloadService.stop(activity));
         webView.loadUrl(homeUrl);
         updateButtons();
@@ -143,6 +148,19 @@ public final class TVRoomChannelView extends FrameLayout {
                 if (!webViewUsable) return;
                 progress.setProgress(value);
                 progress.setVisibility(value >= 100 ? GONE : VISIBLE);
+            }
+
+            @Override public void onShowCustomView(View view, CustomViewCallback callback) {
+                showFullscreen(view, callback);
+            }
+
+            @Override public void onShowCustomView(View view, int requestedOrientation,
+                                                    CustomViewCallback callback) {
+                showFullscreen(view, callback);
+            }
+
+            @Override public void onHideCustomView() {
+                exitFullscreen();
             }
         });
         webView.setWebViewClient(new WebViewClient() {
@@ -193,6 +211,7 @@ public final class TVRoomChannelView extends FrameLayout {
             }
 
             @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                exitFullscreen();
                 webViewUsable = false;
                 removeView(view);
                 view.destroy();
@@ -287,9 +306,7 @@ public final class TVRoomChannelView extends FrameLayout {
         boolean ready = capture.ready();
         stopButton.setVisibility(running ? VISIBLE : GONE);
         downloadButton.setVisibility(videoPage ? VISIBLE : GONE);
-        testButton.setVisibility(videoPage && !running ? VISIBLE : GONE);
         downloadButton.setEnabled(videoPage && ready);
-        testButton.setEnabled(videoPage && ready);
         downloadButton.setText(!ready ? "먼저 영상 재생" : running ? "대기열 추가" : "다운로드");
     }
 
@@ -328,30 +345,6 @@ public final class TVRoomChannelView extends FrameLayout {
                 .show();
     }
 
-    private void confirmTestDownload() {
-        syncSession();
-        if (!capture.ready()) {
-            Toast.makeText(activity, "먼저 영상을 재생해 주세요.", Toast.LENGTH_LONG).show();
-            return;
-        }
-        CaptureState.Snapshot snapshot = capture.snapshot();
-        new AlertDialog.Builder(activity)
-                .setTitle("30초 재생 테스트")
-                .setMessage(snapshot.title + " 영상의 처음 약 30초만 다운로드할까요?")
-                .setNegativeButton("취소", null)
-                .setPositiveButton("테스트", (dialog, which) -> {
-                    boolean accepted = VideoDownloadService.start(activity, snapshot, true);
-                    if (!accepted) {
-                        Toast.makeText(activity, "이미 이 영상의 테스트를 다운로드 중입니다.",
-                                Toast.LENGTH_LONG).show();
-                    } else {
-                        activity.showDownloads();
-                    }
-                    updateButtons();
-                })
-                .show();
-    }
-
     private void showNavigation() {
         if (!webViewUsable) {
             activity.applySiteAddress();
@@ -381,7 +374,72 @@ public final class TVRoomChannelView extends FrameLayout {
     public boolean canGoBack() { return webViewUsable && webView.canGoBack(); }
     public void goBack() { if (webViewUsable) webView.goBack(); }
 
+    private void showFullscreen(View view, WebChromeClient.CustomViewCallback callback) {
+        if (fullscreenView != null) {
+            callback.onCustomViewHidden();
+            return;
+        }
+
+        fullscreenView = view;
+        fullscreenCallback = callback;
+        previousOrientation = activity.getRequestedOrientation();
+        view.setBackgroundColor(Color.BLACK);
+
+        ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
+        decor.addView(view, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        view.bringToFront();
+        activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+        setFullscreenSystemBars(true);
+    }
+
+    public boolean isFullscreen() { return fullscreenView != null; }
+
+    public void exitFullscreen() {
+        View view = fullscreenView;
+        if (view == null) return;
+
+        fullscreenView = null;
+        if (view.getParent() instanceof ViewGroup) {
+            ((ViewGroup) view.getParent()).removeView(view);
+        }
+        WebChromeClient.CustomViewCallback callback = fullscreenCallback;
+        fullscreenCallback = null;
+        if (callback != null) callback.onCustomViewHidden();
+        activity.setRequestedOrientation(previousOrientation);
+        setFullscreenSystemBars(false);
+    }
+
+    private void setFullscreenSystemBars(boolean fullscreen) {
+        Window window = activity.getWindow();
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController controller = window.getInsetsController();
+            if (controller == null) return;
+            if (fullscreen) {
+                controller.hide(WindowInsets.Type.statusBars()
+                        | WindowInsets.Type.navigationBars());
+                controller.setSystemBarsBehavior(
+                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            } else {
+                controller.show(WindowInsets.Type.statusBars()
+                        | WindowInsets.Type.navigationBars());
+            }
+            return;
+        }
+
+        window.getDecorView().setSystemUiVisibility(fullscreen
+                ? View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                | View.SYSTEM_UI_FLAG_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                : View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+    }
+
     public void destroy() {
+        exitFullscreen();
         if (!webViewUsable) return;
         webViewUsable = false;
         webView.stopLoading();

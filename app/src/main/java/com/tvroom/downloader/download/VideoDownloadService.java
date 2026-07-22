@@ -41,7 +41,6 @@ public final class VideoDownloadService extends Service {
     private static final String ACTION_START = "start";
     private static final String ACTION_STOP = "stop";
     private static final String EXTRA_JOB = "job";
-    private static final String EXTRA_TEST = "test";
     private static final String CHANNEL = "tvroom_download";
     private static final int NOTIFICATION_ID = 7201;
     private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
@@ -50,7 +49,7 @@ public final class VideoDownloadService extends Service {
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Object queueLock = new Object();
-    private final Queue<PendingJob> pendingJobs = new ArrayDeque<>();
+    private final Queue<String> pendingJobs = new ArrayDeque<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private boolean processing;
     private volatile HttpURLConnection activeConnection;
@@ -60,34 +59,19 @@ public final class VideoDownloadService extends Service {
     public static boolean isRunning() { return RUNNING.get(); }
 
     public static boolean start(Context context, CaptureState.Snapshot snapshot) {
-        return start(context, snapshot, false);
-    }
-
-    public static boolean start(Context context, CaptureState.Snapshot snapshot, boolean test) {
         LibraryDatabase database = LibraryDatabase.get(context);
-        String recordId = recordId(snapshot, test);
-        String displayTitle = displayTitle(snapshot, test);
         synchronized (VideoDownloadService.class) {
-            VideoItem existing = database.getItem(recordId);
+            VideoItem existing = database.getItem(snapshot.id);
             if (existing != null && ("queued".equals(existing.status) || "downloading".equals(existing.status))) {
                 return false;
             }
-            if (test && existing != null) database.delete(recordId);
-            database.upsert(new VideoItem(recordId, displayTitle, snapshot.pageUrl,
+            database.upsert(new VideoItem(snapshot.id, snapshot.title, snapshot.pageUrl,
                     null, null, "queued", 0, ""));
         }
         Intent intent = new Intent(context, VideoDownloadService.class).setAction(ACTION_START)
-                .putExtra(EXTRA_JOB, snapshot.toJson()).putExtra(EXTRA_TEST, test);
+                .putExtra(EXTRA_JOB, snapshot.toJson());
         ContextCompat.startForegroundService(context, intent);
         return true;
-    }
-
-    private static String recordId(CaptureState.Snapshot snapshot, boolean test) {
-        return test ? snapshot.id + "_test30" : snapshot.id;
-    }
-
-    private static String displayTitle(CaptureState.Snapshot snapshot, boolean test) {
-        return test ? snapshot.title + " (30초 테스트)" : snapshot.title;
     }
 
     public static void stop(Context context) {
@@ -109,12 +93,11 @@ public final class VideoDownloadService extends Service {
         if (intent == null || !ACTION_START.equals(intent.getAction())) return START_NOT_STICKY;
         String raw = intent.getStringExtra(EXTRA_JOB);
         if (raw == null || raw.isEmpty()) return START_NOT_STICKY;
-        boolean test = intent.getBooleanExtra(EXTRA_TEST, false);
 
         boolean begin;
         int waiting;
         synchronized (queueLock) {
-            pendingJobs.offer(new PendingJob(raw, test));
+            pendingJobs.offer(raw);
             waiting = pendingJobs.size();
             begin = !processing;
             if (begin) processing = true;
@@ -134,14 +117,14 @@ public final class VideoDownloadService extends Service {
     private void drainQueue() {
         worker = Thread.currentThread();
         while (!stopRequested.get()) {
-            PendingJob request;
+            String raw;
             synchronized (queueLock) {
-                request = pendingJobs.poll();
-                if (request == null) processing = false;
+                raw = pendingJobs.poll();
+                if (raw == null) processing = false;
             }
-            if (request == null || stopRequested.get()) break;
+            if (raw == null || stopRequested.get()) break;
             cancelled.set(false);
-            runJob(request);
+            runJob(raw);
         }
         synchronized (queueLock) {
             if (stopRequested.get()) pendingJobs.clear();
@@ -183,61 +166,57 @@ public final class VideoDownloadService extends Service {
         broadcast("현재 다운로드와 대기열을 중단합니다.");
     }
 
-    private void runJob(PendingJob request) {
+    private void runJob(String raw) {
         CaptureState.Snapshot job = null;
-        String recordId = null;
-        String displayTitle = null;
         File workDir = null;
         try {
-            job = CaptureState.Snapshot.fromJson(request.raw);
-            recordId = recordId(job, request.test);
-            displayTitle = displayTitle(job, request.test);
+            job = CaptureState.Snapshot.fromJson(raw);
             acquireWakeLock();
-            workDir = TempFiles.jobDir(this, recordId);
-            LibraryDatabase.get(this).updateProgress(recordId, "downloading", 1, "");
-            broadcast(request.test ? "30초 테스트 준비 중" : "다운로드 준비 중");
-            String thumbnail = downloadThumbnail(job, recordId);
-            LibraryDatabase.get(this).updateThumbnail(recordId, thumbnail);
-            broadcast(request.test ? "30초 분량만 다운로드합니다." : "영상 정보를 저장했습니다. 다운로드를 시작합니다.");
+            workDir = TempFiles.jobDir(this, job.id);
+            LibraryDatabase.get(this).updateProgress(job.id, "downloading", 1, "");
+            broadcast("다운로드 준비 중");
+            String thumbnail = downloadThumbnail(job);
+            LibraryDatabase.get(this).updateThumbnail(job.id, thumbnail);
+            broadcast("영상 정보를 저장했습니다. 다운로드를 시작합니다.");
             File tempMedia = new File(workDir, "restored.media.part");
-            String progressId = recordId;
+            CaptureState.Snapshot finalJob = job;
             boolean mp4 = new HlsDownloader(job, (message, percent) -> {
-                LibraryDatabase.get(this).updateProgress(progressId, "downloading", percent, "");
+                LibraryDatabase.get(this).updateProgress(finalJob.id, "downloading", percent, "");
                 updateNotification(message, percent);
                 broadcast(message);
             }, new HlsDownloader.Cancellation() {
                 @Override public boolean cancelled() { return cancelled.get(); }
                 @Override public void connection(HttpURLConnection connection) { activeConnection = connection; }
-            }, request.test ? 5 : Integer.MAX_VALUE).download(workDir, tempMedia);
+            }).download(workDir, tempMedia);
             if (cancelled.get()) throw new InterruptedException("다운로드 중단");
             File finalFile;
             if (mp4) {
-                finalFile = finalVideoFile(displayTitle, ".mp4");
+                finalFile = finalVideoFile(job.title, ".mp4");
                 publish(tempMedia, finalFile);
             } else {
                 finalFile = publishOfflineHls(tempMedia,
-                        new File(workDir, "offline_segments"), displayTitle);
+                        new File(workDir, "offline_segments"), job.title);
             }
-            LibraryDatabase.get(this).complete(recordId, thumbnail, finalFile.getAbsolutePath());
-            updateNotification(request.test ? "30초 테스트 완료" : "다운로드 완료", 100);
-            broadcast((request.test ? "30초 테스트 완료 · " : "다운로드 완료 · ") + displayTitle);
+            LibraryDatabase.get(this).complete(job.id, thumbnail, finalFile.getAbsolutePath());
+            updateNotification("다운로드 완료", 100);
+            broadcast("다운로드 완료 · " + job.title);
         } catch (InterruptedException error) {
-            if (recordId != null) LibraryDatabase.get(this).updateProgress(
-                    recordId, "stopped", 0, "사용자가 다운로드를 중단했습니다.");
+            if (job != null) LibraryDatabase.get(this).updateProgress(
+                    job.id, "stopped", 0, "사용자가 다운로드를 중단했습니다.");
             broadcast("다운로드를 중단하고 임시 파일을 삭제했습니다.");
         } catch (Exception error) {
             if (cancelled.get() || stopRequested.get()) {
-                if (recordId != null) LibraryDatabase.get(this).updateProgress(
-                        recordId, "stopped", 0, "사용자가 다운로드를 중단했습니다.");
+                if (job != null) LibraryDatabase.get(this).updateProgress(
+                        job.id, "stopped", 0, "사용자가 다운로드를 중단했습니다.");
                 broadcast("다운로드를 중단하고 임시 파일을 삭제했습니다.");
             } else {
                 String message = error.getMessage() == null ? "다운로드에 실패했습니다." : error.getMessage();
-                if (recordId != null) LibraryDatabase.get(this).updateProgress(recordId, "error", 0, message);
+                if (job != null) LibraryDatabase.get(this).updateProgress(job.id, "error", 0, message);
                 broadcast("다운로드 실패 · " + message);
             }
         } finally {
             activeConnection = null;
-            if (workDir != null && recordId != null) TempFiles.deleteJob(this, recordId);
+            if (workDir != null && job != null) TempFiles.deleteJob(this, job.id);
             releaseWakeLock();
         }
     }
@@ -317,7 +296,7 @@ public final class VideoDownloadService extends Service {
         source.delete();
     }
 
-    private String downloadThumbnail(CaptureState.Snapshot job, String recordId) {
+    private String downloadThumbnail(CaptureState.Snapshot job) {
         if (job.thumbnailUrl.isEmpty()) return null;
         HttpURLConnection connection = null;
         try {
@@ -329,7 +308,7 @@ public final class VideoDownloadService extends Service {
             if (!job.cookie.isEmpty()) connection.setRequestProperty("Cookie", job.cookie);
             File root = new File(getFilesDir(), "thumbnails");
             if (!root.exists()) root.mkdirs();
-            File output = new File(root, recordId + ".jpg");
+            File output = new File(root, job.id + ".jpg");
             try (InputStream in = connection.getInputStream(); FileOutputStream out = new FileOutputStream(output)) {
                 byte[] buffer = new byte[32 * 1024];
                 int read;
@@ -385,16 +364,6 @@ public final class VideoDownloadService extends Service {
     }
 
     @Nullable @Override public IBinder onBind(Intent intent) { return null; }
-
-    private static final class PendingJob {
-        final String raw;
-        final boolean test;
-
-        PendingJob(String raw, boolean test) {
-            this.raw = raw;
-            this.test = test;
-        }
-    }
 
     @Override public void onDestroy() {
         stopRequested.set(true);

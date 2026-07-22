@@ -34,12 +34,9 @@ final class HlsDownloader {
     private final CaptureState.Snapshot job;
     private final Progress progress;
     private final Cancellation cancellation;
-    private final int maxSegments;
 
-    HlsDownloader(CaptureState.Snapshot job, Progress progress, Cancellation cancellation,
-                  int maxSegments) {
+    HlsDownloader(CaptureState.Snapshot job, Progress progress, Cancellation cancellation) {
         this.job = job; this.progress = progress; this.cancellation = cancellation;
-        this.maxSegments = Math.max(1, maxSegments);
     }
 
     boolean download(File workDir, File mediaOutput) throws Exception {
@@ -109,7 +106,7 @@ final class HlsDownloader {
         }
         ensureDirectory(segmentDir);
         List<File> parts = new ArrayList<>();
-        int total = Math.min(playlist.segments.size(), maxSegments);
+        int total = playlist.segments.size();
         int consecutiveBad = 0;
         for (int i = 0; i < total; i++) {
             checkCancelled();
@@ -155,7 +152,7 @@ final class HlsDownloader {
         int misses = 0, saved = 0, index = start, consecutiveBad = 0;
         ensureDirectory(segmentDir);
         List<File> parts = new ArrayList<>();
-        while (index < start + 10000 && misses < 3 && saved < maxSegments) {
+        while (index < start + 10000 && misses < 3) {
             checkCancelled();
             String url = prefix + index + suffix;
             byte[] encrypted;
