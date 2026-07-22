@@ -12,7 +12,9 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 final class TsRemuxer {
     interface Progress { void update(int completed, int total); }
@@ -22,13 +24,15 @@ final class TsRemuxer {
     private static final long DEFAULT_AUDIO_STEP_US = 21_333L;
     private static final int TS_PACKET_SIZE = 188;
     private static final int SEGMENTS_PER_BATCH = 8;
+    private static final long MPEG_CLOCK_WRAP = 1L << 33;
+    private static final long DEFAULT_SEGMENT_TICKS = 6L * 90_000L;
 
     private TsRemuxer() { }
 
     /**
      * Keeps the already decrypted MPEG-TS stream when a device's platform extractor cannot
-     * remux it to MP4. Media3 can play this container directly, so a platform-specific extractor
-     * failure must not discard a fully downloaded video.
+     * remux it to MP4. Each HLS segment can restart its timestamps and continuity counters, so
+     * rebuild both while joining. This is the Android equivalent of ffmpeg's +genpts fallback.
      */
     static void concatenate(List<File> segments, File output, Progress progress) throws Exception {
         if (segments == null || segments.isEmpty()) {
@@ -38,6 +42,8 @@ final class TsRemuxer {
             throw new IOException("기존 임시 영상 파일을 제거하지 못했습니다.");
         }
         byte[] buffer = new byte[1024 * 1024];
+        long outputBaseTicks = 0L;
+        Map<Integer, Integer> continuity = new HashMap<>();
         try (FileOutputStream out = new FileOutputStream(output)) {
             for (int i = 0; i < segments.size(); i++) {
                 if (Thread.currentThread().isInterrupted()) {
@@ -45,13 +51,14 @@ final class TsRemuxer {
                 }
                 File segment = segments.get(i);
                 if (!segment.isFile() || segment.length() < TS_PACKET_SIZE * 3L
-                        || segment.length() % TS_PACKET_SIZE != 0) {
+                        || segment.length() % TS_PACKET_SIZE != 0
+                        || segment.length() > Integer.MAX_VALUE) {
                     throw new IOException("영상 조각 " + (i + 1) + "의 형식이 올바르지 않습니다.");
                 }
-                try (FileInputStream in = new FileInputStream(segment)) {
-                    int read;
-                    while ((read = in.read(buffer)) >= 0) out.write(buffer, 0, read);
-                }
+                byte[] data = readFully(segment, buffer);
+                long durationTicks = normalizeTimeline(data, outputBaseTicks, continuity);
+                out.write(data);
+                outputBaseTicks += durationTicks;
                 if (progress != null) progress.update(i + 1, segments.size());
             }
             out.getFD().sync();
@@ -62,6 +69,158 @@ final class TsRemuxer {
         if (!output.isFile() || output.length() < 4096) {
             output.delete();
             throw new IOException("저장된 원본 영상 파일이 비어 있습니다.");
+        }
+    }
+
+    private static byte[] readFully(File file, byte[] buffer) throws IOException {
+        ByteArrayOutputStream data = new ByteArrayOutputStream((int) file.length());
+        try (FileInputStream in = new FileInputStream(file)) {
+            int read;
+            while ((read = in.read(buffer)) >= 0) data.write(buffer, 0, read);
+        }
+        return data.toByteArray();
+    }
+
+    private static long normalizeTimeline(byte[] data, long outputBaseTicks,
+                                          Map<Integer, Integer> continuity) {
+        TimestampRange range = new TimestampRange();
+        for (int offset = 0; offset + TS_PACKET_SIZE <= data.length; offset += TS_PACKET_SIZE) {
+            collectTimestamps(data, offset, range);
+        }
+
+        long shift = range.found ? outputBaseTicks - range.first : 0L;
+        for (int offset = 0; offset + TS_PACKET_SIZE <= data.length; offset += TS_PACKET_SIZE) {
+            rewriteContinuity(data, offset, continuity);
+            if (range.found) rewriteTimestamps(data, offset, shift);
+        }
+
+        if (!range.found) return DEFAULT_SEGMENT_TICKS;
+        long measured = range.last - range.first + 3_000L;
+        if (measured < 45_000L || measured > 30L * 90_000L) return DEFAULT_SEGMENT_TICKS;
+        return measured;
+    }
+
+    private static void collectTimestamps(byte[] data, int packet, TimestampRange range) {
+        long pcr = readPcr(data, packet);
+        if (pcr >= 0) range.add(pcr);
+        int payload = pesPayloadOffset(data, packet);
+        if (payload < 0 || payload + 14 >= packet + TS_PACKET_SIZE) return;
+        int flags = (data[payload + 7] >>> 6) & 0x03;
+        if (flags == 2 || flags == 3) range.add(readPts(data, payload + 9));
+        if (flags == 3 && payload + 18 < packet + TS_PACKET_SIZE) {
+            range.add(readPts(data, payload + 14));
+        }
+    }
+
+    private static void rewriteTimestamps(byte[] data, int packet, long shift) {
+        int adaptationControl = (data[packet + 3] >>> 4) & 0x03;
+        if (adaptationControl == 2 || adaptationControl == 3) {
+            int length = data[packet + 4] & 0xff;
+            if (length >= 7 && packet + 5 + length <= packet + TS_PACKET_SIZE
+                    && (data[packet + 5] & 0x10) != 0) {
+                int pcrOffset = packet + 6;
+                long pcr = readPcrBase(data, pcrOffset);
+                writePcrBase(data, pcrOffset, addClock(pcr, shift));
+            }
+        }
+
+        int payload = pesPayloadOffset(data, packet);
+        if (payload < 0 || payload + 14 >= packet + TS_PACKET_SIZE) return;
+        int flags = (data[payload + 7] >>> 6) & 0x03;
+        if (flags == 2 || flags == 3) {
+            int ptsOffset = payload + 9;
+            writePts(data, ptsOffset, addClock(readPts(data, ptsOffset), shift));
+        }
+        if (flags == 3 && payload + 18 < packet + TS_PACKET_SIZE) {
+            int dtsOffset = payload + 14;
+            writePts(data, dtsOffset, addClock(readPts(data, dtsOffset), shift));
+        }
+    }
+
+    private static int pesPayloadOffset(byte[] data, int packet) {
+        if ((data[packet] & 0xff) != 0x47 || (data[packet + 1] & 0x40) == 0) return -1;
+        int adaptationControl = (data[packet + 3] >>> 4) & 0x03;
+        if (adaptationControl == 0 || adaptationControl == 2) return -1;
+        int payload = packet + 4;
+        if (adaptationControl == 3) payload += 1 + (data[payload] & 0xff);
+        if (payload + 9 >= packet + TS_PACKET_SIZE) return -1;
+        if (data[payload] != 0 || data[payload + 1] != 0 || data[payload + 2] != 1) return -1;
+        return payload;
+    }
+
+    private static long readPcr(byte[] data, int packet) {
+        int adaptationControl = (data[packet + 3] >>> 4) & 0x03;
+        if (adaptationControl != 2 && adaptationControl != 3) return -1L;
+        int length = data[packet + 4] & 0xff;
+        if (length < 7 || packet + 5 + length > packet + TS_PACKET_SIZE
+                || (data[packet + 5] & 0x10) == 0) return -1L;
+        return readPcrBase(data, packet + 6);
+    }
+
+    private static long readPcrBase(byte[] data, int offset) {
+        return ((long) (data[offset] & 0xff) << 25)
+                | ((long) (data[offset + 1] & 0xff) << 17)
+                | ((long) (data[offset + 2] & 0xff) << 9)
+                | ((long) (data[offset + 3] & 0xff) << 1)
+                | ((long) (data[offset + 4] & 0x80) >>> 7);
+    }
+
+    private static void writePcrBase(byte[] data, int offset, long value) {
+        int extension = ((data[offset + 4] & 0x01) << 8) | (data[offset + 5] & 0xff);
+        data[offset] = (byte) (value >>> 25);
+        data[offset + 1] = (byte) (value >>> 17);
+        data[offset + 2] = (byte) (value >>> 9);
+        data[offset + 3] = (byte) (value >>> 1);
+        data[offset + 4] = (byte) (((value & 1L) << 7) | 0x7e | (extension >>> 8));
+        data[offset + 5] = (byte) extension;
+    }
+
+    private static long readPts(byte[] data, int offset) {
+        return ((long) (data[offset] & 0x0e) << 29)
+                | ((long) (data[offset + 1] & 0xff) << 22)
+                | ((long) (data[offset + 2] & 0xfe) << 14)
+                | ((long) (data[offset + 3] & 0xff) << 7)
+                | ((long) (data[offset + 4] & 0xfe) >>> 1);
+    }
+
+    private static void writePts(byte[] data, int offset, long value) {
+        int prefix = data[offset] & 0xf0;
+        data[offset] = (byte) (prefix | (((value >>> 30) & 0x07) << 1) | 1);
+        data[offset + 1] = (byte) (value >>> 22);
+        data[offset + 2] = (byte) ((((value >>> 15) & 0x7f) << 1) | 1);
+        data[offset + 3] = (byte) (value >>> 7);
+        data[offset + 4] = (byte) (((value & 0x7f) << 1) | 1);
+    }
+
+    private static long addClock(long value, long shift) {
+        long adjusted = (value + shift) % MPEG_CLOCK_WRAP;
+        return adjusted < 0 ? adjusted + MPEG_CLOCK_WRAP : adjusted;
+    }
+
+    private static void rewriteContinuity(byte[] data, int packet,
+                                          Map<Integer, Integer> continuity) {
+        int pid = ((data[packet + 1] & 0x1f) << 8) | (data[packet + 2] & 0xff);
+        int adaptationControl = (data[packet + 3] >>> 4) & 0x03;
+        if (adaptationControl == 1 || adaptationControl == 3) {
+            int next = continuity.containsKey(pid) ? continuity.get(pid) : 0;
+            data[packet + 3] = (byte) ((data[packet + 3] & 0xf0) | next);
+            continuity.put(pid, (next + 1) & 0x0f);
+        } else if (adaptationControl == 2 && continuity.containsKey(pid)) {
+            int current = (continuity.get(pid) + 15) & 0x0f;
+            data[packet + 3] = (byte) ((data[packet + 3] & 0xf0) | current);
+        }
+    }
+
+    private static final class TimestampRange {
+        boolean found;
+        long first = Long.MAX_VALUE;
+        long last = Long.MIN_VALUE;
+
+        void add(long value) {
+            if (value < 0) return;
+            found = true;
+            first = Math.min(first, value);
+            last = Math.max(last, value);
         }
     }
 
