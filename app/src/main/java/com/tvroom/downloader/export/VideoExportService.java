@@ -74,6 +74,7 @@ public final class VideoExportService extends Service {
     private int currentIndex;
     private int successCount;
     private int failedCount;
+    private String lastFailure = "";
 
     public static boolean isRunning() { return RUNNING.get(); }
 
@@ -197,9 +198,15 @@ public final class VideoExportService extends Service {
             return;
         }
         if (currentIndex >= paths.size()) {
-            String message = failedCount == 0
-                    ? "영상 " + successCount + "개를 내보냈습니다."
-                    : "내보내기 완료 · 성공 " + successCount + "개 · 실패 " + failedCount + "개";
+            String message;
+            if (failedCount == 0) {
+                message = "영상 " + successCount + "개를 내보냈습니다.";
+            } else if (successCount == 0) {
+                message = "내보내기 실패 · " + lastFailure;
+            } else {
+                message = "내보내기 완료 · 성공 " + successCount + "개 · 실패 "
+                        + failedCount + "개\n마지막 오류 · " + lastFailure;
+            }
             finishExport(message);
             return;
         }
@@ -217,9 +224,10 @@ public final class VideoExportService extends Service {
         boolean hls = input.getName().toLowerCase(Locale.US).endsWith(".m3u8");
         if (hls) media.setMimeType(MimeTypes.APPLICATION_M3U8);
 
-        Transformer.Builder builder = new Transformer.Builder(this)
-                .setVideoMimeType(MimeTypes.VIDEO_H264)
-                .setAudioMimeType(MimeTypes.AUDIO_AAC);
+        // Preserve the original H.264/AAC samples whenever possible. Forcing output MIME types
+        // makes Transformer initialize device encoders even though this export only needs an MP4
+        // container, and some phones fail while creating those unnecessary encoders.
+        Transformer.Builder builder = new Transformer.Builder(this);
         if (hls) {
             int tsFlags = DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
                     | DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES;
@@ -252,7 +260,7 @@ public final class VideoExportService extends Service {
                 mainHandler.removeCallbacks(progressPoller);
                 transformer = null;
                 output.delete();
-                failCurrent("MP4 변환 실패 · " + title + " · " + clean(exception));
+                failCurrent("MP4 변환 실패 · " + title + " · " + exportError(exception));
             }
         }).build();
         try {
@@ -340,6 +348,7 @@ public final class VideoExportService extends Service {
             finishExport("영상 내보내기를 취소했습니다.");
             return;
         }
+        lastFailure = message;
         failedCount++;
         currentIndex++;
         broadcast(message);
@@ -431,6 +440,18 @@ public final class VideoExportService extends Service {
             return error == null ? "알 수 없는 오류" : error.getClass().getSimpleName();
         }
         return message.replace('\n', ' ').replace('\r', ' ').trim();
+    }
+
+    private static String exportError(ExportException error) {
+        StringBuilder detail = new StringBuilder(error.getErrorCodeName());
+        String message = clean(error);
+        if (!message.equals(error.getErrorCodeName())) detail.append(" · ").append(message);
+        Throwable cause = error.getCause();
+        if (cause != null) {
+            String causeMessage = clean(cause);
+            if (!causeMessage.equals(message)) detail.append(" · 원인: ").append(causeMessage);
+        }
+        return detail.toString();
     }
 
     private static void deleteTree(File file) {

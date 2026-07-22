@@ -38,7 +38,7 @@ public final class SettingsChannelView extends android.widget.FrameLayout {
         url.setText(AppSettings.getSiteUrl(activity));
         cleanup.setEnabled(!cleaning && !VideoDownloadService.isRunning());
         try { version.setText("버전 " + activity.getPackageManager().getPackageInfo(activity.getPackageName(), 0).versionName); }
-        catch (Exception ignored) { version.setText("버전 1.1.2"); }
+        catch (Exception ignored) { version.setText("버전 1.1.3"); }
     }
 
     private void saveAddress() {
