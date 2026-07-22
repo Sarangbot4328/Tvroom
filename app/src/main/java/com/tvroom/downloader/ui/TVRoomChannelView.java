@@ -52,6 +52,7 @@ public final class TVRoomChannelView extends FrameLayout {
     private final ProgressBar progress;
     private final TextView errorView;
     private final Button downloadButton;
+    private final Button testButton;
     private final Button moveButton;
     private final Button stopButton;
     private final CaptureState capture = new CaptureState();
@@ -87,11 +88,13 @@ public final class TVRoomChannelView extends FrameLayout {
         LinearLayout actions = new LinearLayout(activity);
         actions.setGravity(Gravity.CENTER_VERTICAL);
         stopButton = button("중단", Color.rgb(198, 40, 40), 76);
-        moveButton = button("이동", Color.rgb(69, 90, 100), 76);
-        downloadButton = button("먼저 영상 재생", ContextCompat.getColor(activity, R.color.green), 132);
+        moveButton = button("이동", Color.rgb(69, 90, 100), 64);
+        downloadButton = button("먼저 영상 재생", ContextCompat.getColor(activity, R.color.green), 110);
+        testButton = button("30초 테스트", Color.rgb(239, 108, 0), 108);
         actions.addView(stopButton);
         actions.addView(moveButton);
         actions.addView(downloadButton);
+        actions.addView(testButton);
         for (int i = 1; i < actions.getChildCount(); i++) {
             LinearLayout.LayoutParams params =
                     (LinearLayout.LayoutParams) actions.getChildAt(i).getLayoutParams();
@@ -107,6 +110,7 @@ public final class TVRoomChannelView extends FrameLayout {
         configureWebView();
         moveButton.setOnClickListener(v -> showNavigation());
         downloadButton.setOnClickListener(v -> confirmDownload());
+        testButton.setOnClickListener(v -> confirmTestDownload());
         stopButton.setOnClickListener(v -> VideoDownloadService.stop(activity));
         webView.loadUrl(homeUrl);
         updateButtons();
@@ -283,7 +287,9 @@ public final class TVRoomChannelView extends FrameLayout {
         boolean ready = capture.ready();
         stopButton.setVisibility(running ? VISIBLE : GONE);
         downloadButton.setVisibility(videoPage ? VISIBLE : GONE);
+        testButton.setVisibility(videoPage && !running ? VISIBLE : GONE);
         downloadButton.setEnabled(videoPage && ready);
+        testButton.setEnabled(videoPage && ready);
         downloadButton.setText(!ready ? "먼저 영상 재생" : running ? "대기열 추가" : "다운로드");
     }
 
@@ -314,6 +320,30 @@ public final class TVRoomChannelView extends FrameLayout {
                     } else if (queueing) {
                         Toast.makeText(activity, "다운로드 대기열에 추가했습니다.",
                                 Toast.LENGTH_SHORT).show();
+                    } else {
+                        activity.showDownloads();
+                    }
+                    updateButtons();
+                })
+                .show();
+    }
+
+    private void confirmTestDownload() {
+        syncSession();
+        if (!capture.ready()) {
+            Toast.makeText(activity, "먼저 영상을 재생해 주세요.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        CaptureState.Snapshot snapshot = capture.snapshot();
+        new AlertDialog.Builder(activity)
+                .setTitle("30초 재생 테스트")
+                .setMessage(snapshot.title + " 영상의 처음 약 30초만 다운로드할까요?")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("테스트", (dialog, which) -> {
+                    boolean accepted = VideoDownloadService.start(activity, snapshot, true);
+                    if (!accepted) {
+                        Toast.makeText(activity, "이미 이 영상의 테스트를 다운로드 중입니다.",
+                                Toast.LENGTH_LONG).show();
                     } else {
                         activity.showDownloads();
                     }

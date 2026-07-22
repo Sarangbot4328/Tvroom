@@ -34,9 +34,12 @@ final class HlsDownloader {
     private final CaptureState.Snapshot job;
     private final Progress progress;
     private final Cancellation cancellation;
+    private final int maxSegments;
 
-    HlsDownloader(CaptureState.Snapshot job, Progress progress, Cancellation cancellation) {
+    HlsDownloader(CaptureState.Snapshot job, Progress progress, Cancellation cancellation,
+                  int maxSegments) {
         this.job = job; this.progress = progress; this.cancellation = cancellation;
+        this.maxSegments = Math.max(1, maxSegments);
     }
 
     boolean download(File workDir, File mediaOutput) throws Exception {
@@ -47,8 +50,8 @@ final class HlsDownloader {
                 Playlist playlist = resolvePlaylist(job.m3u8Urls.get(i));
                 List<File> segments = downloadPlaylist(playlist,
                         new File(workDir, "playlist_" + i));
-                progress.update("MP4로 복원 중…", 92);
-                return remuxOrKeepTs(segments, mediaOutput);
+                progress.update("오프라인 영상 구성 중…", 92);
+                return saveOfflineHls(segments, mediaOutput);
             } catch (InterruptedException error) { throw error; }
             catch (Exception error) { last = error; mediaOutput.delete(); }
         }
@@ -57,8 +60,8 @@ final class HlsDownloader {
             List<File> segments = downloadSegmentList(segment,
                     new File(workDir, "captured_segments"),
                     hex(job.keyHex), ivOrZero(job.ivHex), 0L);
-            progress.update("MP4로 복원 중…", 92);
-            return remuxOrKeepTs(segments, mediaOutput);
+            progress.update("오프라인 영상 구성 중…", 92);
+            return saveOfflineHls(segments, mediaOutput);
         }
         throw new IllegalStateException(last == null ? "캡처된 스트림을 다운로드하지 못했습니다." : clean(last));
     }
@@ -106,7 +109,7 @@ final class HlsDownloader {
         }
         ensureDirectory(segmentDir);
         List<File> parts = new ArrayList<>();
-        int total = playlist.segments.size();
+        int total = Math.min(playlist.segments.size(), maxSegments);
         int consecutiveBad = 0;
         for (int i = 0; i < total; i++) {
             checkCancelled();
@@ -152,7 +155,7 @@ final class HlsDownloader {
         int misses = 0, saved = 0, index = start, consecutiveBad = 0;
         ensureDirectory(segmentDir);
         List<File> parts = new ArrayList<>();
-        while (index < start + 10000 && misses < 3) {
+        while (index < start + 10000 && misses < 3 && saved < maxSegments) {
             checkCancelled();
             String url = prefix + index + suffix;
             byte[] encrypted;
@@ -200,26 +203,19 @@ final class HlsDownloader {
         }
     }
 
-    /** Returns true for an MP4 output and false when an offline HLS package was created. */
-    private boolean remuxOrKeepTs(List<File> segments, File output) throws Exception {
-        try {
-            TsRemuxer.remux(segments, output, (completed, total) -> {
-                int percent = 92 + (int) (completed * 7L / Math.max(1, total));
-                progress.update("MP4 복원 " + completed + "/" + total, percent);
-            });
-            return true;
-        } catch (InterruptedException error) {
-            throw error;
-        } catch (Exception remuxError) {
-            output.delete();
-            File offlineSegments = new File(output.getParentFile(), "offline_segments");
-            progress.update("기기 변환기를 사용할 수 없어 오프라인 HLS로 저장 중…", 92);
-            TsRemuxer.createOfflineHls(segments, output, offlineSegments, (completed, total) -> {
-                int percent = 92 + (int) (completed * 7L / Math.max(1, total));
-                progress.update("오프라인 영상 저장 " + completed + "/" + total, percent);
-            });
-            return false;
-        }
+    /**
+     * Keeps the original HLS segment boundaries. Android's platform MediaMuxer can produce an MP4
+     * that reports the right duration and seek frames but never advances playback when the source
+     * has discontinuous timestamps, so it must not be used as a success path for these streams.
+     */
+    private boolean saveOfflineHls(List<File> segments, File output) throws Exception {
+        output.delete();
+        File offlineSegments = new File(output.getParentFile(), "offline_segments");
+        TsRemuxer.createOfflineHls(segments, output, offlineSegments, (completed, total) -> {
+            int percent = 92 + (int) (completed * 7L / Math.max(1, total));
+            progress.update("오프라인 영상 저장 " + completed + "/" + total, percent);
+        });
+        return false;
     }
 
     private boolean probe(String url) throws Exception {

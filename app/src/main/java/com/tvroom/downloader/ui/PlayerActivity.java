@@ -19,8 +19,11 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DefaultDataSource;
+import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.hls.DefaultHlsExtractorFactory;
 import androidx.media3.exoplayer.hls.HlsMediaSource;
 import androidx.media3.ui.PlayerView;
 
@@ -28,6 +31,7 @@ import com.tvroom.downloader.R;
 
 import java.io.File;
 
+@UnstableApi
 public final class PlayerActivity extends AppCompatActivity {
     public static final String EXTRA_PATH = "path";
     public static final String EXTRA_TITLE = "title";
@@ -75,8 +79,12 @@ public final class PlayerActivity extends AppCompatActivity {
         if (offlineHls) item.setMimeType(MimeTypes.APPLICATION_M3U8);
         MediaItem mediaItem = item.build();
         if (offlineHls) {
+            int tsFlags = DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
+                    | DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES;
+            DefaultHlsExtractorFactory extractorFactory =
+                    new DefaultHlsExtractorFactory(tsFlags, true);
             player.setMediaSource(new HlsMediaSource.Factory(new DefaultDataSource.Factory(this))
-                    .createMediaSource(mediaItem));
+                    .setExtractorFactory(extractorFactory).createMediaSource(mediaItem));
         } else {
             player.setMediaItem(mediaItem);
         }

@@ -106,7 +106,12 @@ public final class DownloadChannelView extends android.widget.FrameLayout {
         }
         @Override public int getItemCount() { return items.size(); }
         private String statusText(VideoItem item) {
-            if ("complete".equals(item.status)) return "다운로드 완료 · 눌러서 재생";
+            if ("complete".equals(item.status)) {
+                boolean hls = item.filePath != null
+                        && item.filePath.toLowerCase(java.util.Locale.US).endsWith(".m3u8");
+                return hls ? "다운로드 완료 · 오프라인 HLS · 눌러서 재생"
+                        : "다운로드 완료 · 눌러서 재생";
+            }
             if ("downloading".equals(item.status)) return "다운로드 중 · " + item.progress + "%";
             if ("queued".equals(item.status)) return "다운로드 준비 중";
             if ("stopped".equals(item.status)) return "다운로드 중단됨 · 임시 파일 삭제 완료";
