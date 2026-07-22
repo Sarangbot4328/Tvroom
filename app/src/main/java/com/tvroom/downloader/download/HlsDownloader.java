@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -45,7 +46,7 @@ final class HlsDownloader {
             checkCancelled();
             try {
                 Playlist playlist = resolvePlaylist(job.m3u8Urls.get(i));
-                List<File> segments = downloadPlaylist(playlist,
+                DownloadedSegments segments = downloadPlaylist(playlist,
                         new File(workDir, "playlist_" + i));
                 progress.update("오프라인 영상 구성 중…", 92);
                 return saveOfflineHls(segments, mediaOutput);
@@ -58,7 +59,7 @@ final class HlsDownloader {
                     new File(workDir, "captured_segments"),
                     hex(job.keyHex), ivOrZero(job.ivHex), 0L);
             progress.update("오프라인 영상 구성 중…", 92);
-            return saveOfflineHls(segments, mediaOutput);
+            return saveOfflineHls(new DownloadedSegments(segments), mediaOutput);
         }
         throw new IllegalStateException(last == null ? "캡처된 스트림을 다운로드하지 못했습니다." : clean(last));
     }
@@ -74,10 +75,20 @@ final class HlsDownloader {
         Playlist out = new Playlist();
         out.baseUrl = url;
         out.mediaSequence = 0;
+        double pendingDuration = Double.NaN;
+        boolean pendingDiscontinuity = false;
         String[] lines = text.split("\\r?\\n");
         for (String raw : lines) {
             String line = raw.trim();
-            if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
+            if (line.startsWith("#EXTINF:")) {
+                String value = line.substring(line.indexOf(':') + 1);
+                int comma = value.indexOf(',');
+                if (comma >= 0) value = value.substring(0, comma);
+                try { pendingDuration = Double.parseDouble(value.trim()); }
+                catch (Exception ignored) { pendingDuration = Double.NaN; }
+            } else if (line.equals("#EXT-X-DISCONTINUITY")) {
+                pendingDiscontinuity = true;
+            } else if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
                 try { out.mediaSequence = Long.parseLong(line.substring(line.indexOf(':') + 1).trim()); }
                 catch (Exception ignored) { }
             } else if (line.startsWith("#EXT-X-KEY:")) {
@@ -86,13 +97,17 @@ final class HlsDownloader {
                 Matcher iv = ATTR_IV.matcher(line); if (iv.find()) out.iv = padHex(iv.group(1));
             } else if (!line.isEmpty() && !line.startsWith("#")) {
                 out.segments.add(absolute(url, line));
+                out.durations.add(pendingDuration);
+                out.discontinuities.add(pendingDiscontinuity);
+                pendingDuration = Double.NaN;
+                pendingDiscontinuity = false;
             }
         }
         if (out.segments.isEmpty()) throw new IllegalStateException("HLS 세그먼트가 없습니다.");
         return out;
     }
 
-    private List<File> downloadPlaylist(Playlist playlist, File segmentDir) throws Exception {
+    private DownloadedSegments downloadPlaylist(Playlist playlist, File segmentDir) throws Exception {
         String custom = firstSegmentList(playlist.segments);
         byte[] capturedKey = job.keyHex.isEmpty() ? null : hex(job.keyHex);
         byte[] key = capturedKey;
@@ -102,12 +117,29 @@ final class HlsDownloader {
         byte[] iv = playlist.iv != null ? playlist.iv : ivOrZero(job.ivHex);
         if (custom != null) {
             if (key == null) throw new IllegalStateException("segment_list 암호화 키를 찾지 못했습니다.");
-            return downloadSegmentList(custom, segmentDir, key, iv, playlist.mediaSequence);
+            List<File> parts = downloadSegmentList(
+                    custom, segmentDir, key, iv, playlist.mediaSequence);
+            DownloadedSegments downloaded = new DownloadedSegments(parts);
+            if (parts.size() == playlist.segments.size()) {
+                downloaded.durations.addAll(playlist.durations);
+                downloaded.discontinuities.addAll(playlist.discontinuities);
+            } else {
+                double typical = typicalDuration(playlist.durations);
+                if (!Double.isNaN(typical)) {
+                    downloaded.durations.addAll(
+                            Collections.nCopies(parts.size(), typical));
+                    downloaded.discontinuities.addAll(
+                            Collections.nCopies(parts.size(), false));
+                }
+            }
+            return downloaded;
         }
         ensureDirectory(segmentDir);
         List<File> parts = new ArrayList<>();
+        DownloadedSegments downloaded = new DownloadedSegments(parts);
         int total = playlist.segments.size();
         int consecutiveBad = 0;
+        boolean missingBeforeNext = false;
         for (int i = 0; i < total; i++) {
             checkCancelled();
             progress.update("영상 조각 다운로드 " + (i + 1) + "/" + total,
@@ -131,15 +163,23 @@ final class HlsDownloader {
                             "초반 영상 조각을 연속으로 복원하지 못했습니다. 키 또는 IV가 맞지 않습니다.",
                             error);
                 }
+                missingBeforeNext = true;
                 continue;
             }
             consecutiveBad = 0;
             File part = new File(segmentDir, String.format(Locale.US, "seg_%06d.ts", i));
             writePart(part, data);
             parts.add(part);
+            downloaded.durations.add(i < playlist.durations.size()
+                    ? playlist.durations.get(i) : Double.NaN);
+            boolean originalDiscontinuity = i < playlist.discontinuities.size()
+                    && playlist.discontinuities.get(i);
+            downloaded.discontinuities.add(originalDiscontinuity
+                    || (missingBeforeNext && parts.size() > 1));
+            missingBeforeNext = false;
         }
         if (parts.isEmpty()) throw new IllegalStateException("복원 가능한 HLS 영상 조각이 없습니다.");
-        return parts;
+        return downloaded;
     }
 
     private List<File> downloadSegmentList(String seedUrl, File segmentDir,
@@ -205,10 +245,11 @@ final class HlsDownloader {
      * that reports the right duration and seek frames but never advances playback when the source
      * has discontinuous timestamps, so it must not be used as a success path for these streams.
      */
-    private boolean saveOfflineHls(List<File> segments, File output) throws Exception {
+    private boolean saveOfflineHls(DownloadedSegments downloaded, File output) throws Exception {
         output.delete();
         File offlineSegments = new File(output.getParentFile(), "offline_segments");
-        TsRemuxer.createOfflineHls(segments, output, offlineSegments, (completed, total) -> {
+        TsRemuxer.createOfflineHls(downloaded.files, downloaded.durations,
+                downloaded.discontinuities, output, offlineSegments, (completed, total) -> {
             int percent = 92 + (int) (completed * 7L / Math.max(1, total));
             progress.update("오프라인 영상 저장 " + completed + "/" + total, percent);
         });
@@ -311,6 +352,19 @@ final class HlsDownloader {
         return null;
     }
 
+    private static double typicalDuration(List<Double> values) {
+        List<Double> valid = new ArrayList<>();
+        for (Double value : values) {
+            if (value != null && !Double.isNaN(value) && !Double.isInfinite(value)
+                    && value >= 0.05 && value <= 120.0) valid.add(value);
+        }
+        if (valid.isEmpty()) return Double.NaN;
+        Collections.sort(valid);
+        int middle = valid.size() / 2;
+        return (valid.size() & 1) == 1 ? valid.get(middle)
+                : (valid.get(middle - 1) + valid.get(middle)) / 2.0;
+    }
+
     private static byte[] normalizeKey(byte[] value) {
         if (value.length == 16) return value;
         String text = new String(value, StandardCharsets.US_ASCII).trim().replaceFirst("^0x", "");
@@ -410,7 +464,19 @@ final class HlsDownloader {
         String message = error.getMessage(); return message == null || message.isEmpty() ? error.getClass().getSimpleName() : message;
     }
     private static final class Playlist {
-        String baseUrl, keyUrl; byte[] iv; boolean encrypted; long mediaSequence; final List<String> segments = new ArrayList<>();
+        String baseUrl, keyUrl;
+        byte[] iv;
+        boolean encrypted;
+        long mediaSequence;
+        final List<String> segments = new ArrayList<>();
+        final List<Double> durations = new ArrayList<>();
+        final List<Boolean> discontinuities = new ArrayList<>();
+    }
+    private static final class DownloadedSegments {
+        final List<File> files;
+        final List<Double> durations = new ArrayList<>();
+        final List<Boolean> discontinuities = new ArrayList<>();
+        DownloadedSegments(List<File> files) { this.files = files; }
     }
     private static final class HttpStatusException extends Exception {
         final int code; HttpStatusException(int code) { super("HTTP " + code); this.code = code; }

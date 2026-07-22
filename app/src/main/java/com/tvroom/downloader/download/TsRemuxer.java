@@ -32,12 +32,13 @@ final class TsRemuxer {
     private TsRemuxer() { }
 
     /**
-     * Preserves decrypted HLS segments as a local VOD playlist. Unlike a progressive TS file,
-     * HLS gives Media3 an explicit boundary for every segment, so timestamp resets can be handled
-     * with EXT-X-DISCONTINUITY instead of leaving the player permanently buffering.
+     * Preserves decrypted HLS segments as a local VOD playlist while normalizing every segment
+     * onto one continuous timeline. Exact EXTINF durations and genuine source discontinuities are
+     * retained so Media3 reports the correct duration and advances without boundary stalls.
      */
-    static void createOfflineHls(List<File> segments, File playlist, File segmentDir,
-                                 Progress progress) throws Exception {
+    static void createOfflineHls(List<File> segments, List<Double> declaredDurations,
+                                 List<Boolean> declaredDiscontinuities, File playlist,
+                                 File segmentDir, Progress progress) throws Exception {
         if (segments == null || segments.isEmpty()) {
             throw new IllegalStateException("저장할 영상 조각이 없습니다.");
         }
@@ -53,7 +54,8 @@ final class TsRemuxer {
         double[] durations = new double[segments.size()];
         boolean[] discontinuities = new boolean[segments.size()];
         double maximumDuration = 1.0;
-        long previousLast = UNSET;
+        long timelineBaseTicks = 0L;
+        Map<Integer, Integer> continuity = new HashMap<>();
         try {
             for (int i = 0; i < segments.size(); i++) {
                 if (Thread.currentThread().isInterrupted()) {
@@ -67,27 +69,29 @@ final class TsRemuxer {
                 }
                 byte[] data = readFully(source, buffer);
                 TimestampRange range = scanTimestampRange(data);
-                durations[i] = durationSeconds(range);
+                double measuredDuration = durationSeconds(range);
+                double declaredDuration = i < declaredDurations.size()
+                        ? declaredDurations.get(i) : Double.NaN;
+                durations[i] = validDuration(declaredDuration)
+                        ? declaredDuration : measuredDuration;
                 maximumDuration = Math.max(maximumDuration, durations[i]);
-                if (i > 0) {
-                    if (!range.found || previousLast == UNSET) {
-                        discontinuities[i] = true;
-                    } else {
-                        long gap = range.first - previousLast;
-                        discontinuities[i] = gap < -90_000L || gap > 30L * 90_000L;
-                    }
-                }
-                previousLast = range.found ? range.last : UNSET;
+                discontinuities[i] = i < declaredDiscontinuities.size()
+                        && declaredDiscontinuities.get(i);
+
+                // Give every saved segment a single continuous PTS/PCR timeline. The source can
+                // reset timestamps every few fragments; leaving those resets in place makes the
+                // offline player buffer at each boundary until the user seeks manually.
+                normalizeTimeline(data, timelineBaseTicks, continuity);
+                timelineBaseTicks += Math.max(1L,
+                        Math.round(durations[i] * 90_000.0));
 
                 File target = new File(segmentDir,
                         String.format(java.util.Locale.US, "seg_%06d.ts", i));
-                if (!source.renameTo(target)) {
-                    try (FileOutputStream out = new FileOutputStream(target)) {
-                        out.write(data);
-                    }
-                    if (!source.delete()) {
-                        throw new IOException("기존 영상 조각을 정리하지 못했습니다.");
-                    }
+                try (FileOutputStream out = new FileOutputStream(target)) {
+                    out.write(data);
+                }
+                if (!source.delete()) {
+                    throw new IOException("기존 영상 조각을 정리하지 못했습니다.");
                 }
                 if (progress != null) progress.update(i + 1, segments.size());
             }
@@ -130,6 +134,11 @@ final class TsRemuxer {
         long ticks = range.last - range.first + 3_000L;
         if (ticks < 45_000L || ticks > 30L * 90_000L) return 6.0;
         return ticks / 90_000.0;
+    }
+
+    private static boolean validDuration(double value) {
+        return !Double.isNaN(value) && !Double.isInfinite(value)
+                && value >= 0.05 && value <= 120.0;
     }
 
     private static void deleteTree(File file) {
