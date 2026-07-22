@@ -124,6 +124,21 @@ public final class LibraryDatabase extends SQLiteOpenHelper {
     }
 
     private static void deleteFile(String path) {
-        if (path != null && !path.isEmpty()) new File(path).delete();
+        if (path == null || path.isEmpty()) return;
+        File file = new File(path);
+        File parent = file.getParentFile();
+        if ("index.m3u8".equals(file.getName()) && parent != null
+                && parent.getName().endsWith(".hls")) {
+            deleteTree(parent);
+        } else {
+            file.delete();
+        }
+    }
+
+    private static void deleteTree(File file) {
+        if (file == null || !file.exists()) return;
+        File[] children = file.listFiles();
+        if (children != null) for (File child : children) deleteTree(child);
+        file.delete();
     }
 }

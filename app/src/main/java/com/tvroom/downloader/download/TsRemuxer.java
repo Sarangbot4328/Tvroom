@@ -10,7 +10,9 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -28,6 +30,114 @@ final class TsRemuxer {
     private static final long DEFAULT_SEGMENT_TICKS = 6L * 90_000L;
 
     private TsRemuxer() { }
+
+    /**
+     * Preserves decrypted HLS segments as a local VOD playlist. Unlike a progressive TS file,
+     * HLS gives Media3 an explicit boundary for every segment, so timestamp resets can be handled
+     * with EXT-X-DISCONTINUITY instead of leaving the player permanently buffering.
+     */
+    static void createOfflineHls(List<File> segments, File playlist, File segmentDir,
+                                 Progress progress) throws Exception {
+        if (segments == null || segments.isEmpty()) {
+            throw new IllegalStateException("저장할 영상 조각이 없습니다.");
+        }
+        if (playlist.exists() && !playlist.delete()) {
+            throw new IOException("기존 임시 재생목록을 제거하지 못했습니다.");
+        }
+        deleteTree(segmentDir);
+        if (!segmentDir.mkdirs()) {
+            throw new IOException("오프라인 영상 조각 폴더를 만들지 못했습니다.");
+        }
+
+        byte[] buffer = new byte[1024 * 1024];
+        double[] durations = new double[segments.size()];
+        boolean[] discontinuities = new boolean[segments.size()];
+        double maximumDuration = 1.0;
+        long previousLast = UNSET;
+        try {
+            for (int i = 0; i < segments.size(); i++) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new InterruptedException("다운로드 중단");
+                }
+                File source = segments.get(i);
+                if (!source.isFile() || source.length() < TS_PACKET_SIZE * 3L
+                        || source.length() % TS_PACKET_SIZE != 0
+                        || source.length() > Integer.MAX_VALUE) {
+                    throw new IOException("영상 조각 " + (i + 1) + "의 형식이 올바르지 않습니다.");
+                }
+                byte[] data = readFully(source, buffer);
+                TimestampRange range = scanTimestampRange(data);
+                durations[i] = durationSeconds(range);
+                maximumDuration = Math.max(maximumDuration, durations[i]);
+                if (i > 0) {
+                    if (!range.found || previousLast == UNSET) {
+                        discontinuities[i] = true;
+                    } else {
+                        long gap = range.first - previousLast;
+                        discontinuities[i] = gap < -90_000L || gap > 30L * 90_000L;
+                    }
+                }
+                previousLast = range.found ? range.last : UNSET;
+
+                File target = new File(segmentDir,
+                        String.format(java.util.Locale.US, "seg_%06d.ts", i));
+                if (!source.renameTo(target)) {
+                    try (FileOutputStream out = new FileOutputStream(target)) {
+                        out.write(data);
+                    }
+                    if (!source.delete()) {
+                        throw new IOException("기존 영상 조각을 정리하지 못했습니다.");
+                    }
+                }
+                if (progress != null) progress.update(i + 1, segments.size());
+            }
+
+            int targetDuration = Math.max(1, (int) Math.ceil(maximumDuration));
+            StringBuilder text = new StringBuilder();
+            text.append("#EXTM3U\n")
+                    .append("#EXT-X-VERSION:3\n")
+                    .append("#EXT-X-TARGETDURATION:").append(targetDuration).append('\n')
+                    .append("#EXT-X-MEDIA-SEQUENCE:0\n")
+                    .append("#EXT-X-PLAYLIST-TYPE:VOD\n");
+            for (int i = 0; i < segments.size(); i++) {
+                if (discontinuities[i]) text.append("#EXT-X-DISCONTINUITY\n");
+                text.append(String.format(java.util.Locale.US, "#EXTINF:%.3f,\n", durations[i]));
+                text.append(segmentDir.getName()).append('/')
+                        .append(String.format(java.util.Locale.US, "seg_%06d.ts", i)).append('\n');
+            }
+            text.append("#EXT-X-ENDLIST\n");
+            try (OutputStreamWriter writer = new OutputStreamWriter(
+                    new FileOutputStream(playlist), StandardCharsets.UTF_8)) {
+                writer.write(text.toString());
+            }
+        } catch (Exception error) {
+            playlist.delete();
+            deleteTree(segmentDir);
+            throw error;
+        }
+    }
+
+    private static TimestampRange scanTimestampRange(byte[] data) {
+        TimestampRange range = new TimestampRange();
+        for (int offset = 0; offset + TS_PACKET_SIZE <= data.length; offset += TS_PACKET_SIZE) {
+            collectTimestamps(data, offset, range);
+        }
+        return range;
+    }
+
+    private static double durationSeconds(TimestampRange range) {
+        if (!range.found) return 6.0;
+        long ticks = range.last - range.first + 3_000L;
+        if (ticks < 45_000L || ticks > 30L * 90_000L) return 6.0;
+        return ticks / 90_000.0;
+    }
+
+    private static void deleteTree(File file) {
+        if (file == null || !file.exists()) return;
+        File[] children = file.listFiles();
+        if (children != null) for (File child : children) deleteTree(child);
+        file.delete();
+    }
 
     /**
      * Keeps the already decrypted MPEG-TS stream when a device's platform extractor cannot
@@ -83,10 +193,7 @@ final class TsRemuxer {
 
     private static long normalizeTimeline(byte[] data, long outputBaseTicks,
                                           Map<Integer, Integer> continuity) {
-        TimestampRange range = new TimestampRange();
-        for (int offset = 0; offset + TS_PACKET_SIZE <= data.length; offset += TS_PACKET_SIZE) {
-            collectTimestamps(data, offset, range);
-        }
+        TimestampRange range = scanTimestampRange(data);
 
         long shift = range.found ? outputBaseTicks - range.first : 0L;
         for (int offset = 0; offset + TS_PACKET_SIZE <= data.length; offset += TS_PACKET_SIZE) {

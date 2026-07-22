@@ -189,8 +189,14 @@ public final class VideoDownloadService extends Service {
                 @Override public void connection(HttpURLConnection connection) { activeConnection = connection; }
             }).download(workDir, tempMedia);
             if (cancelled.get()) throw new InterruptedException("다운로드 중단");
-            File finalFile = finalVideoFile(job.title, mp4 ? ".mp4" : ".ts");
-            publish(tempMedia, finalFile);
+            File finalFile;
+            if (mp4) {
+                finalFile = finalVideoFile(job.title, ".mp4");
+                publish(tempMedia, finalFile);
+            } else {
+                finalFile = publishOfflineHls(tempMedia,
+                        new File(workDir, "offline_segments"), job.title);
+            }
             LibraryDatabase.get(this).complete(job.id, thumbnail, finalFile.getAbsolutePath());
             updateNotification("다운로드 완료", 100);
             broadcast("다운로드 완료 · " + job.title);
@@ -216,16 +222,58 @@ public final class VideoDownloadService extends Service {
     }
 
     private File finalVideoFile(String title, String extension) {
-        File movies = getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES);
-        if (movies == null) movies = new File(getFilesDir(), "movies");
-        File root = new File(movies, "TVRoomDownloader");
-        if (!root.exists() && !root.mkdirs()) throw new IllegalStateException("영상 저장 폴더를 만들지 못했습니다.");
-        String safe = title.replaceAll("[\\\\/:*?\"<>|]", "_").replaceAll("\\s+", " ").trim();
-        if (safe.isEmpty()) safe = "tvroom-video";
+        File root = videoRoot();
+        String safe = safeTitle(title);
         File file = new File(root, safe + extension);
         int suffix = 1;
         while (file.exists()) file = new File(root, safe + "_" + suffix++ + extension);
         return file;
+    }
+
+    private File publishOfflineHls(File playlist, File sourceSegments, String title) throws Exception {
+        File root = videoRoot();
+        String safe = safeTitle(title);
+        File packageDir = new File(root, safe + ".hls");
+        int suffix = 1;
+        while (packageDir.exists()) packageDir = new File(root, safe + "_" + suffix++ + ".hls");
+        File targetSegments = new File(packageDir, sourceSegments.getName());
+        if (!targetSegments.mkdirs()) throw new IllegalStateException("오프라인 영상 폴더를 만들지 못했습니다.");
+        try {
+            File index = new File(packageDir, "index.m3u8");
+            publish(playlist, index);
+            File[] parts = sourceSegments.listFiles((dir, name) -> name.endsWith(".ts"));
+            if (parts == null || parts.length == 0) {
+                throw new IllegalStateException("오프라인 영상 조각이 없습니다.");
+            }
+            java.util.Arrays.sort(parts, java.util.Comparator.comparing(File::getName));
+            for (File part : parts) publish(part, new File(targetSegments, part.getName()));
+            return index;
+        } catch (Exception error) {
+            deleteTree(packageDir);
+            throw error;
+        }
+    }
+
+    private File videoRoot() {
+        File movies = getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES);
+        if (movies == null) movies = new File(getFilesDir(), "movies");
+        File root = new File(movies, "TVRoomDownloader");
+        if (!root.exists() && !root.mkdirs()) {
+            throw new IllegalStateException("영상 저장 폴더를 만들지 못했습니다.");
+        }
+        return root;
+    }
+
+    private String safeTitle(String title) {
+        String safe = title.replaceAll("[\\\\/:*?\"<>|]", "_").replaceAll("\\s+", " ").trim();
+        return safe.isEmpty() ? "tvroom-video" : safe;
+    }
+
+    private void deleteTree(File file) {
+        if (file == null || !file.exists()) return;
+        File[] children = file.listFiles();
+        if (children != null) for (File child : children) deleteTree(child);
+        file.delete();
     }
 
     private void publish(File source, File destination) throws Exception {

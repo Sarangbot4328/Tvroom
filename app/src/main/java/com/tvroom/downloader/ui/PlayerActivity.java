@@ -16,7 +16,12 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.MimeTypes;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Player;
+import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.hls.HlsMediaSource;
 import androidx.media3.ui.PlayerView;
 
 import com.tvroom.downloader.R;
@@ -50,6 +55,14 @@ public final class PlayerActivity extends AppCompatActivity {
 
         setTitle(getIntent().getStringExtra(EXTRA_TITLE));
         player = new ExoPlayer.Builder(this).build();
+        player.addListener(new Player.Listener() {
+            @Override public void onPlayerError(PlaybackException error) {
+                String detail = error.getMessage();
+                Toast.makeText(PlayerActivity.this,
+                        "영상 재생 오류" + (detail == null ? "" : " · " + detail),
+                        Toast.LENGTH_LONG).show();
+            }
+        });
         playerView.setPlayer(player);
         playerView.setControllerShowTimeoutMs(3000);
         playerView.setControllerHideOnTouch(true);
@@ -57,7 +70,16 @@ public final class PlayerActivity extends AppCompatActivity {
         playerView.setControllerVisibilityListener(
                 (PlayerView.ControllerVisibilityListener) visibility ->
                         setActionIconsVisible(visibility == View.VISIBLE));
-        player.setMediaItem(MediaItem.fromUri(Uri.fromFile(new File(path))));
+        boolean offlineHls = path.toLowerCase(java.util.Locale.US).endsWith(".m3u8");
+        MediaItem.Builder item = new MediaItem.Builder().setUri(Uri.fromFile(new File(path)));
+        if (offlineHls) item.setMimeType(MimeTypes.APPLICATION_M3U8);
+        MediaItem mediaItem = item.build();
+        if (offlineHls) {
+            player.setMediaSource(new HlsMediaSource.Factory(new DefaultDataSource.Factory(this))
+                    .createMediaSource(mediaItem));
+        } else {
+            player.setMediaItem(mediaItem);
+        }
         player.prepare();
         player.play();
     }

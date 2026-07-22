@@ -200,7 +200,7 @@ final class HlsDownloader {
         }
     }
 
-    /** Returns true for an MP4 output and false when the safe MPEG-TS fallback was used. */
+    /** Returns true for an MP4 output and false when an offline HLS package was created. */
     private boolean remuxOrKeepTs(List<File> segments, File output) throws Exception {
         try {
             TsRemuxer.remux(segments, output, (completed, total) -> {
@@ -212,10 +212,11 @@ final class HlsDownloader {
             throw error;
         } catch (Exception remuxError) {
             output.delete();
-            progress.update("기기 변환기를 사용할 수 없어 원본 영상으로 저장 중…", 92);
-            TsRemuxer.concatenate(segments, output, (completed, total) -> {
+            File offlineSegments = new File(output.getParentFile(), "offline_segments");
+            progress.update("기기 변환기를 사용할 수 없어 오프라인 HLS로 저장 중…", 92);
+            TsRemuxer.createOfflineHls(segments, output, offlineSegments, (completed, total) -> {
                 int percent = 92 + (int) (completed * 7L / Math.max(1, total));
-                progress.update("원본 영상 저장 " + completed + "/" + total, percent);
+                progress.update("오프라인 영상 저장 " + completed + "/" + total, percent);
             });
             return false;
         }
