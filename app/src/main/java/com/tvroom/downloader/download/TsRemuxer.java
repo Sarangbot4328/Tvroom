@@ -26,6 +26,46 @@ final class TsRemuxer {
     private TsRemuxer() { }
 
     /**
+     * Keeps the already decrypted MPEG-TS stream when a device's platform extractor cannot
+     * remux it to MP4. Media3 can play this container directly, so a platform-specific extractor
+     * failure must not discard a fully downloaded video.
+     */
+    static void concatenate(List<File> segments, File output, Progress progress) throws Exception {
+        if (segments == null || segments.isEmpty()) {
+            throw new IllegalStateException("저장할 영상 조각이 없습니다.");
+        }
+        if (output.exists() && !output.delete()) {
+            throw new IOException("기존 임시 영상 파일을 제거하지 못했습니다.");
+        }
+        byte[] buffer = new byte[1024 * 1024];
+        try (FileOutputStream out = new FileOutputStream(output)) {
+            for (int i = 0; i < segments.size(); i++) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new InterruptedException("다운로드 중단");
+                }
+                File segment = segments.get(i);
+                if (!segment.isFile() || segment.length() < TS_PACKET_SIZE * 3L
+                        || segment.length() % TS_PACKET_SIZE != 0) {
+                    throw new IOException("영상 조각 " + (i + 1) + "의 형식이 올바르지 않습니다.");
+                }
+                try (FileInputStream in = new FileInputStream(segment)) {
+                    int read;
+                    while ((read = in.read(buffer)) >= 0) out.write(buffer, 0, read);
+                }
+                if (progress != null) progress.update(i + 1, segments.size());
+            }
+            out.getFD().sync();
+        } catch (Exception error) {
+            output.delete();
+            throw error;
+        }
+        if (!output.isFile() || output.length() < 4096) {
+            output.delete();
+            throw new IOException("저장된 원본 영상 파일이 비어 있습니다.");
+        }
+    }
+
+    /**
      * Opens short batches of HLS segments. A small batch keeps MediaExtractor away from long
      * discontinuous TS inputs while avoiding one native extractor instance per tiny fragment.
      * PAT/PMT packets are prefixed so continuation fragments can be parsed independently.

@@ -39,7 +39,7 @@ final class HlsDownloader {
         this.job = job; this.progress = progress; this.cancellation = cancellation;
     }
 
-    void download(File workDir, File mp4Output) throws Exception {
+    boolean download(File workDir, File mediaOutput) throws Exception {
         Exception last = null;
         for (int i = job.m3u8Urls.size() - 1; i >= 0; i--) {
             checkCancelled();
@@ -48,19 +48,17 @@ final class HlsDownloader {
                 List<File> segments = downloadPlaylist(playlist,
                         new File(workDir, "playlist_" + i));
                 progress.update("MP4로 복원 중…", 92);
-                remux(segments, mp4Output);
-                return;
+                return remuxOrKeepTs(segments, mediaOutput);
             } catch (InterruptedException error) { throw error; }
-            catch (Exception error) { last = error; mp4Output.delete(); }
+            catch (Exception error) { last = error; mediaOutput.delete(); }
         }
         String segment = firstSegmentList(job.segmentUrls);
         if (segment != null && !job.keyHex.isEmpty()) {
             List<File> segments = downloadSegmentList(segment,
                     new File(workDir, "captured_segments"),
-                    hex(job.keyHex), ivOrZero(job.ivHex));
+                    hex(job.keyHex), ivOrZero(job.ivHex), 0L);
             progress.update("MP4로 복원 중…", 92);
-            remux(segments, mp4Output);
-            return;
+            return remuxOrKeepTs(segments, mediaOutput);
         }
         throw new IllegalStateException(last == null ? "캡처된 스트림을 다운로드하지 못했습니다." : clean(last));
     }
@@ -104,34 +102,54 @@ final class HlsDownloader {
         byte[] iv = playlist.iv != null ? playlist.iv : ivOrZero(job.ivHex);
         if (custom != null) {
             if (key == null) throw new IllegalStateException("segment_list 암호화 키를 찾지 못했습니다.");
-            return downloadSegmentList(custom, segmentDir, key, iv);
+            return downloadSegmentList(custom, segmentDir, key, iv, playlist.mediaSequence);
         }
         ensureDirectory(segmentDir);
         List<File> parts = new ArrayList<>();
         int total = playlist.segments.size();
+        int consecutiveBad = 0;
         for (int i = 0; i < total; i++) {
             checkCancelled();
             progress.update("영상 조각 다운로드 " + (i + 1) + "/" + total,
                     12 + (int) ((i + 1L) * 75 / total));
-            byte[] data = fetch(playlist.segments.get(i), job.pageUrl, false);
-            if (key != null && playlist.encrypted) data = decryptBest(data, key, iv,
-                    playlist.mediaSequence + i);
-            else data = normalizeTs(data);
+            byte[] data;
+            try {
+                data = fetch(playlist.segments.get(i), job.pageUrl, false);
+                if (key != null && playlist.encrypted) {
+                    long sequence = playlist.mediaSequence + i;
+                    data = decryptBest(data, key, iv, sequence,
+                            playlist.mediaSequence, playlist.mediaSequence);
+                } else {
+                    data = normalizeTs(data);
+                }
+            } catch (InterruptedException error) {
+                throw error;
+            } catch (Exception error) {
+                consecutiveBad++;
+                if (parts.isEmpty() && consecutiveBad >= 5) {
+                    throw new IllegalStateException(
+                            "초반 영상 조각을 연속으로 복원하지 못했습니다. 키 또는 IV가 맞지 않습니다.",
+                            error);
+                }
+                continue;
+            }
+            consecutiveBad = 0;
             File part = new File(segmentDir, String.format(Locale.US, "seg_%06d.ts", i));
             writePart(part, data);
             parts.add(part);
         }
+        if (parts.isEmpty()) throw new IllegalStateException("복원 가능한 HLS 영상 조각이 없습니다.");
         return parts;
     }
 
     private List<File> downloadSegmentList(String seedUrl, File segmentDir,
-                                           byte[] key, byte[] iv) throws Exception {
+                                           byte[] key, byte[] iv, long mediaSequence) throws Exception {
         Matcher matcher = SEGMENT_LIST.matcher(seedUrl);
         if (!matcher.matches()) throw new IllegalStateException("segment_list 주소 형식을 인식하지 못했습니다.");
         String prefix = matcher.group(1), suffix = matcher.group(3);
         int captured = Integer.parseInt(matcher.group(2));
         int start = probe(prefix + 0 + suffix) ? 0 : captured;
-        int misses = 0, saved = 0, index = start;
+        int misses = 0, saved = 0, index = start, consecutiveBad = 0;
         ensureDirectory(segmentDir);
         List<File> parts = new ArrayList<>();
         while (index < start + 10000 && misses < 3) {
@@ -144,7 +162,20 @@ final class HlsDownloader {
                 throw error;
             }
             misses = 0;
-            byte[] ts = decryptBest(encrypted, key, iv, index);
+            byte[] ts;
+            try {
+                ts = decryptBest(encrypted, key, iv, index, start, mediaSequence);
+            } catch (Exception error) {
+                consecutiveBad++;
+                if (parts.isEmpty() && consecutiveBad >= 5) {
+                    throw new IllegalStateException(
+                            "초반 영상 조각을 연속으로 복원하지 못했습니다. 키 또는 IV가 맞지 않습니다.",
+                            error);
+                }
+                index++;
+                continue;
+            }
+            consecutiveBad = 0;
             File part = new File(segmentDir, String.format(Locale.US, "seg_%06d.ts", index));
             writePart(part, ts);
             parts.add(part);
@@ -169,11 +200,25 @@ final class HlsDownloader {
         }
     }
 
-    private void remux(List<File> segments, File output) throws Exception {
-        TsRemuxer.remux(segments, output, (completed, total) -> {
-            int percent = 92 + (int) (completed * 7L / Math.max(1, total));
-            progress.update("MP4 복원 " + completed + "/" + total, percent);
-        });
+    /** Returns true for an MP4 output and false when the safe MPEG-TS fallback was used. */
+    private boolean remuxOrKeepTs(List<File> segments, File output) throws Exception {
+        try {
+            TsRemuxer.remux(segments, output, (completed, total) -> {
+                int percent = 92 + (int) (completed * 7L / Math.max(1, total));
+                progress.update("MP4 복원 " + completed + "/" + total, percent);
+            });
+            return true;
+        } catch (InterruptedException error) {
+            throw error;
+        } catch (Exception remuxError) {
+            output.delete();
+            progress.update("기기 변환기를 사용할 수 없어 원본 영상으로 저장 중…", 92);
+            TsRemuxer.concatenate(segments, output, (completed, total) -> {
+                int percent = 92 + (int) (completed * 7L / Math.max(1, total));
+                progress.update("원본 영상 저장 " + completed + "/" + total, percent);
+            });
+            return false;
+        }
     }
 
     private boolean probe(String url) throws Exception {
@@ -279,17 +324,24 @@ final class HlsDownloader {
         return Arrays.copyOf(value, 16);
     }
 
-    private static byte[] decryptBest(byte[] encrypted, byte[] key, byte[] configuredIv, long sequence)
+    private static byte[] decryptBest(byte[] encrypted, byte[] key, byte[] configuredIv,
+                                      long index, long firstIndex, long mediaSequence)
             throws GeneralSecurityException {
+        // Some servers use the segment_list name while returning an already decoded TS payload.
+        // The strict multi-packet check in normalizeTs makes this safe without mistaking ciphertext.
         try { return normalizeTs(encrypted); } catch (Exception ignored) { }
         Set<String> seen = new LinkedHashSet<>();
         List<byte[]> candidates = new ArrayList<>();
+        long relativeIndex = Math.max(0L, index - firstIndex);
         candidates.add(configuredIv);
         candidates.add(new byte[16]);
-        candidates.add(sequenceIv(sequence));
-        candidates.add(sequenceIv(sequence + 1));
-        candidates.add(sequenceIv(1));
-        candidates.add(addToIv(configuredIv, sequence));
+        candidates.add(sequenceIv(index));
+        candidates.add(sequenceIv(relativeIndex));
+        candidates.add(sequenceIv(index + 1));
+        candidates.add(sequenceIv(relativeIndex + 1));
+        candidates.add(sequenceIv(mediaSequence + relativeIndex));
+        candidates.add(addToIv(configuredIv, index));
+        candidates.add(addToIv(configuredIv, relativeIndex));
         GeneralSecurityException last = null;
         for (byte[] candidate : candidates) {
             String marker = Arrays.toString(candidate); if (!seen.add(marker)) continue;
@@ -310,8 +362,21 @@ final class HlsDownloader {
         int limit = Math.min(value.length, 4096);
         for (int offset = 0; offset < limit; offset++) {
             if ((value[offset] & 0xff) != 0x47) continue;
-            if (offset + 188 >= value.length || (value[offset + 188] & 0xff) == 0x47) {
-                return offset == 0 ? value : Arrays.copyOfRange(value, offset, value.length);
+            int packets = (value.length - offset) / 188;
+            if (packets < 3) continue;
+            int checks = Math.min(8, packets);
+            boolean valid = true;
+            for (int packet = 0; packet < checks; packet++) {
+                int position = offset + packet * 188;
+                if ((value[position] & 0xff) != 0x47
+                        || (value[position + 3] & 0x30) == 0) {
+                    valid = false;
+                    break;
+                }
+            }
+            if (valid) {
+                // Remove image wrappers and AES padding so concatenated segments stay 188-byte aligned.
+                return Arrays.copyOfRange(value, offset, offset + packets * 188);
             }
         }
         throw new IllegalStateException("복호화 결과가 MPEG-TS 형식이 아닙니다.");

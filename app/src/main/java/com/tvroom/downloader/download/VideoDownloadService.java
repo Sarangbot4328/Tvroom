@@ -178,19 +178,19 @@ public final class VideoDownloadService extends Service {
             String thumbnail = downloadThumbnail(job);
             LibraryDatabase.get(this).updateThumbnail(job.id, thumbnail);
             broadcast("영상 정보를 저장했습니다. 다운로드를 시작합니다.");
-            File tempMp4 = new File(workDir, "restored.mp4.part");
+            File tempMedia = new File(workDir, "restored.media.part");
             CaptureState.Snapshot finalJob = job;
-            new HlsDownloader(job, (message, percent) -> {
+            boolean mp4 = new HlsDownloader(job, (message, percent) -> {
                 LibraryDatabase.get(this).updateProgress(finalJob.id, "downloading", percent, "");
                 updateNotification(message, percent);
                 broadcast(message);
             }, new HlsDownloader.Cancellation() {
                 @Override public boolean cancelled() { return cancelled.get(); }
                 @Override public void connection(HttpURLConnection connection) { activeConnection = connection; }
-            }).download(workDir, tempMp4);
+            }).download(workDir, tempMedia);
             if (cancelled.get()) throw new InterruptedException("다운로드 중단");
-            File finalFile = finalVideoFile(job.title);
-            publish(tempMp4, finalFile);
+            File finalFile = finalVideoFile(job.title, mp4 ? ".mp4" : ".ts");
+            publish(tempMedia, finalFile);
             LibraryDatabase.get(this).complete(job.id, thumbnail, finalFile.getAbsolutePath());
             updateNotification("다운로드 완료", 100);
             broadcast("다운로드 완료 · " + job.title);
@@ -215,16 +215,16 @@ public final class VideoDownloadService extends Service {
         }
     }
 
-    private File finalVideoFile(String title) {
+    private File finalVideoFile(String title, String extension) {
         File movies = getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES);
         if (movies == null) movies = new File(getFilesDir(), "movies");
         File root = new File(movies, "TVRoomDownloader");
         if (!root.exists() && !root.mkdirs()) throw new IllegalStateException("영상 저장 폴더를 만들지 못했습니다.");
         String safe = title.replaceAll("[\\\\/:*?\"<>|]", "_").replaceAll("\\s+", " ").trim();
         if (safe.isEmpty()) safe = "tvroom-video";
-        File file = new File(root, safe + ".mp4");
+        File file = new File(root, safe + extension);
         int suffix = 1;
-        while (file.exists()) file = new File(root, safe + "_" + suffix++ + ".mp4");
+        while (file.exists()) file = new File(root, safe + "_" + suffix++ + extension);
         return file;
     }
 

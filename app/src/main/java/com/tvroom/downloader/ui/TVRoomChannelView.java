@@ -6,11 +6,15 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Color;
 import android.net.Uri;
+import android.net.http.SslError;
 import android.view.Gravity;
 import android.view.View;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.RenderProcessGoneDetail;
+import android.webkit.SslErrorHandler;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
@@ -20,6 +24,7 @@ import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AlertDialog;
@@ -41,15 +46,17 @@ import java.util.Collections;
 
 public final class TVRoomChannelView extends FrameLayout {
     private final MainActivity activity;
-    private final String homeUrl;
-    private final String allowedHost;
+    private String homeUrl;
+    private String allowedHost;
     private final WebView webView;
     private final ProgressBar progress;
+    private final TextView errorView;
     private final Button downloadButton;
     private final Button moveButton;
     private final Button stopButton;
     private final CaptureState capture = new CaptureState();
     private boolean receiverRegistered;
+    private boolean webViewUsable = true;
 
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) { updateButtons(); }
@@ -62,6 +69,15 @@ public final class TVRoomChannelView extends FrameLayout {
         allowedHost = Uri.parse(homeUrl).getHost();
         webView = new WebView(activity);
         addView(webView, new LayoutParams(-1, -1));
+
+        errorView = new TextView(activity);
+        errorView.setBackgroundColor(ContextCompat.getColor(activity, R.color.background));
+        errorView.setTextColor(ContextCompat.getColor(activity, R.color.text_primary));
+        errorView.setTextSize(16);
+        errorView.setGravity(Gravity.CENTER);
+        errorView.setPadding(dp(28), dp(28), dp(28), dp(28));
+        errorView.setVisibility(GONE);
+        addView(errorView, new LayoutParams(-1, -1));
 
         progress = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
         LayoutParams progressParams = new LayoutParams(-1, dp(3));
@@ -120,6 +136,7 @@ public final class TVRoomChannelView extends FrameLayout {
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override public void onProgressChanged(WebView view, int value) {
+                if (!webViewUsable) return;
                 progress.setProgress(value);
                 progress.setVisibility(value >= 100 ? GONE : VISIBLE);
             }
@@ -128,13 +145,57 @@ public final class TVRoomChannelView extends FrameLayout {
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 if (!request.isForMainFrame()) return false;
                 String host = request.getUrl().getHost();
-                return host == null || allowedHost == null ||
-                        !(host.equalsIgnoreCase(allowedHost) || host.endsWith("." + allowedHost));
+                if (isSameHostOrSubdomain(host, allowedHost)) return false;
+                if (isNumberedTvroomHost(host) && isNumberedTvroomHost(allowedHost)) {
+                    homeUrl = rootUrl(request.getUrl());
+                    allowedHost = host;
+                    AppSettings.setSiteUrl(activity, homeUrl);
+                    Toast.makeText(activity, "변경된 티비룸 주소로 자동 연결합니다.", Toast.LENGTH_SHORT).show();
+                    return false;
+                }
+                showSiteError("사이트 주소가 변경되었거나 허용되지 않은 주소로 이동했습니다.\n\n"
+                        + "설정 탭에서 최신 티비룸 주소를 확인해 주세요.");
+                return true;
             }
 
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                if (!webViewUsable) return;
+                hideSiteError();
                 capture.reset(url);
                 updateButtons();
+            }
+
+            @Override public void onReceivedError(WebView view, WebResourceRequest request,
+                                                   WebResourceError error) {
+                if (request.isForMainFrame()) {
+                    showSiteError("티비룸 사이트에 연결할 수 없습니다.\n\n"
+                            + "인터넷 연결 또는 설정 탭의 사이트 주소를 확인해 주세요.");
+                }
+            }
+
+            @Override public void onReceivedHttpError(WebView view, WebResourceRequest request,
+                                                       WebResourceResponse response) {
+                if (request.isForMainFrame() && response.getStatusCode() >= 400) {
+                    showSiteError("티비룸 사이트에서 오류를 응답했습니다. (HTTP "
+                            + response.getStatusCode() + ")\n\n설정 탭에서 사이트 주소를 확인해 주세요.");
+                }
+            }
+
+            @Override public void onReceivedSslError(WebView view, SslErrorHandler handler,
+                                                      SslError error) {
+                handler.cancel();
+                showSiteError("사이트의 보안 인증서를 확인할 수 없어 연결을 중단했습니다.\n\n"
+                        + "설정 탭에서 사이트 주소를 확인해 주세요.");
+            }
+
+            @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                webViewUsable = false;
+                removeView(view);
+                view.destroy();
+                showSiteError("WebView를 불러오는 중 오류가 발생했습니다.\n\n"
+                        + "티비룸 탭을 다시 누르면 새로 연결합니다.");
+                updateButtons();
+                return true;
             }
 
             @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
@@ -144,6 +205,7 @@ public final class TVRoomChannelView extends FrameLayout {
             }
 
             @Override public void onPageFinished(WebView view, String url) {
+                if (!webViewUsable) return;
                 syncSession();
                 view.evaluateJavascript(captureScript(), null);
                 updateButtons();
@@ -196,7 +258,9 @@ public final class TVRoomChannelView extends FrameLayout {
     }
 
     private void syncSession() {
+        if (!webViewUsable) return;
         String url = webView.getUrl();
+        if (url == null) return;
         StringBuilder cookies = new StringBuilder();
         java.util.LinkedHashSet<String> unique = new java.util.LinkedHashSet<>();
         String pageCookies = CookieManager.getInstance().getCookie(url);
@@ -214,7 +278,7 @@ public final class TVRoomChannelView extends FrameLayout {
     }
 
     private void updateButtons() {
-        boolean videoPage = isVideoPage(webView.getUrl());
+        boolean videoPage = webViewUsable && isVideoPage(webView.getUrl());
         boolean running = VideoDownloadService.isRunning();
         boolean ready = capture.ready();
         stopButton.setVisibility(running ? VISIBLE : GONE);
@@ -259,6 +323,10 @@ public final class TVRoomChannelView extends FrameLayout {
     }
 
     private void showNavigation() {
+        if (!webViewUsable) {
+            activity.applySiteAddress();
+            return;
+        }
         new AlertDialog.Builder(activity)
                 .setTitle("페이지 이동")
                 .setItems(new String[]{"메인으로 가기", "뒤로 가기", "앞으로 가기", "새로고침"},
@@ -273,15 +341,50 @@ public final class TVRoomChannelView extends FrameLayout {
     }
 
     public void goHome() {
+        if (!webViewUsable) {
+            activity.applySiteAddress();
+            return;
+        }
         if (!homeUrl.equals(webView.getUrl())) webView.loadUrl(homeUrl);
     }
 
-    public boolean canGoBack() { return webView.canGoBack(); }
-    public void goBack() { webView.goBack(); }
+    public boolean canGoBack() { return webViewUsable && webView.canGoBack(); }
+    public void goBack() { if (webViewUsable) webView.goBack(); }
 
     public void destroy() {
+        if (!webViewUsable) return;
+        webViewUsable = false;
         webView.stopLoading();
         webView.destroy();
+    }
+
+    private boolean isSameHostOrSubdomain(String host, String expected) {
+        if (host == null || expected == null) return false;
+        return host.equalsIgnoreCase(expected)
+                || host.toLowerCase(java.util.Locale.US)
+                .endsWith("." + expected.toLowerCase(java.util.Locale.US));
+    }
+
+    private boolean isNumberedTvroomHost(String host) {
+        if (host == null) return false;
+        String normalized = host.toLowerCase(java.util.Locale.US);
+        if (normalized.startsWith("www.")) normalized = normalized.substring(4);
+        return normalized.matches("tvroom\\d+\\.org");
+    }
+
+    private String rootUrl(Uri uri) {
+        String host = uri.getHost();
+        return host == null ? homeUrl : "https://" + host + "/";
+    }
+
+    private void showSiteError(String message) {
+        progress.setVisibility(GONE);
+        errorView.setText(message);
+        errorView.setVisibility(VISIBLE);
+    }
+
+    private void hideSiteError() {
+        errorView.setVisibility(GONE);
     }
 
     @Override protected void onAttachedToWindow() {

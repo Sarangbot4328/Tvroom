@@ -15,7 +15,7 @@
                 android:textColor="@color/text_secondary" android:textSize="13sp" />
             <EditText android:id="@+id/tvroom_url" android:layout_width="match_parent"
                 android:layout_height="52dp" android:layout_marginTop="10dp"
-                android:hint="https://tvroom20.org/" android:inputType="textUri" android:maxLines="1" />
+                android:hint="https://tvroom21.org/" android:inputType="textUri" android:maxLines="1" />
             <Button android:id="@+id/save_tvroom_url" android:layout_width="match_parent"
                 android:layout_height="48dp" android:layout_marginTop="8dp"
                 android:text="티비룸 주소 저장" android:textAllCaps="false" />

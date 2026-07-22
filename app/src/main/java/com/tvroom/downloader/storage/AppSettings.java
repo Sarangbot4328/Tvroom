@@ -5,7 +5,7 @@ import android.content.SharedPreferences;
 import android.net.Uri;
 
 public final class AppSettings {
-    public static final String DEFAULT_URL = "https://tvroom20.org/";
+    public static final String DEFAULT_URL = "https://tvroom21.org/";
     private static final String PREFS = "tvroom_settings";
     private static final String KEY_URL = "site_url";
 
