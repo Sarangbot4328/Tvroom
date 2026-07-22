@@ -249,7 +249,11 @@ public final class DownloadChannelView extends android.widget.FrameLayout {
         new AlertDialog.Builder(activity).setTitle("영상 삭제")
                 .setMessage("‘" + item.title + "’ 영상과 썸네일을 삭제할까요?")
                 .setNegativeButton("취소", null).setPositiveButton("삭제", (d, w) -> {
-                    executor.execute(() -> { LibraryDatabase.get(activity).delete(item.id); post(this::refresh); });
+                    executor.execute(() -> {
+                        PlayerActivity.clearSavedPosition(activity, item.filePath);
+                        LibraryDatabase.get(activity).delete(item.id);
+                        post(this::refresh);
+                    });
                 }).show();
     }
 }

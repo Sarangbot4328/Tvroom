@@ -15,6 +15,7 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
@@ -35,10 +36,13 @@ import java.io.File;
 public final class PlayerActivity extends AppCompatActivity {
     public static final String EXTRA_PATH = "path";
     public static final String EXTRA_TITLE = "title";
+    private static final String POSITION_PREFS = "video_playback_positions";
+    private static final long FINISHED_MARGIN_MS = 10_000L;
 
     private ExoPlayer player;
     private PlayerView playerView;
     private LinearLayout actions;
+    private String mediaPath;
     private boolean immersive;
     private boolean inPictureInPicture;
 
@@ -56,6 +60,7 @@ public final class PlayerActivity extends AppCompatActivity {
             finish();
             return;
         }
+        mediaPath = new File(path).getAbsolutePath();
 
         setTitle(getIntent().getStringExtra(EXTRA_TITLE));
         player = new ExoPlayer.Builder(this).build();
@@ -65,6 +70,10 @@ public final class PlayerActivity extends AppCompatActivity {
                 Toast.makeText(PlayerActivity.this,
                         "영상 재생 오류" + (detail == null ? "" : " · " + detail),
                         Toast.LENGTH_LONG).show();
+            }
+
+            @Override public void onPlaybackStateChanged(int playbackState) {
+                if (playbackState == Player.STATE_ENDED) clearPlaybackPosition();
             }
         });
         playerView.setPlayer(player);
@@ -88,8 +97,38 @@ public final class PlayerActivity extends AppCompatActivity {
         } else {
             player.setMediaItem(mediaItem);
         }
+        long savedPosition = getSharedPreferences(POSITION_PREFS, MODE_PRIVATE)
+                .getLong(mediaPath, 0L);
+        if (savedPosition > 0L) player.seekTo(savedPosition);
         player.prepare();
         player.play();
+    }
+
+    private void savePlaybackPosition() {
+        if (player == null || mediaPath == null) return;
+        long position = Math.max(0L, player.getCurrentPosition());
+        long duration = player.getDuration();
+        boolean finished = player.getPlaybackState() == Player.STATE_ENDED
+                || (duration != C.TIME_UNSET && duration > 0L
+                && position >= Math.max(0L, duration - FINISHED_MARGIN_MS));
+        if (finished || position < 1_000L) {
+            clearPlaybackPosition();
+        } else {
+            getSharedPreferences(POSITION_PREFS, MODE_PRIVATE).edit()
+                    .putLong(mediaPath, position).apply();
+        }
+    }
+
+    private void clearPlaybackPosition() {
+        if (mediaPath == null) return;
+        clearSavedPosition(this, mediaPath);
+    }
+
+    public static void clearSavedPosition(android.content.Context context, String path) {
+        if (path == null || path.isEmpty()) return;
+        String absolutePath = new File(path).getAbsolutePath();
+        context.getSharedPreferences(POSITION_PREFS, MODE_PRIVATE).edit()
+                .remove(absolutePath).apply();
     }
 
     private void setActionIconsVisible(boolean visible) {
@@ -152,8 +191,14 @@ public final class PlayerActivity extends AppCompatActivity {
         }
     }
 
+    @Override protected void onPause() {
+        savePlaybackPosition();
+        super.onPause();
+    }
+
     @Override protected void onDestroy() {
         if (player != null) {
+            savePlaybackPosition();
             player.release();
             player = null;
         }

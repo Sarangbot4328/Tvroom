@@ -59,7 +59,9 @@ public final class VideoExportService extends Service {
     private static final String EXTRA_TITLES = "titles";
     private static final String EXTRA_PATHS = "paths";
     private static final String EXTRA_FOLDER = "folder";
-    private static final String CHANNEL = "tvroom_export";
+    private static final String OLD_CHANNEL = "tvroom_export";
+    private static final String PROGRESS_CHANNEL = "tvroom_export_active_v3";
+    private static final String COMPLETE_CHANNEL = "tvroom_export_no_badge_v2";
     private static final int NOTIFICATION_ID = 7202;
     private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
 
@@ -78,6 +80,12 @@ public final class VideoExportService extends Service {
     private String lastFailure = "";
 
     public static boolean isRunning() { return RUNNING.get(); }
+
+    public static void clearFinishedNotification(Context context) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        manager.cancel(NOTIFICATION_ID);
+        manager.deleteNotificationChannel(OLD_CHANNEL);
+    }
 
     public static boolean start(Context context, List<VideoItem> videos, Uri folder) {
         if (videos == null || videos.isEmpty() || folder == null || !RUNNING.compareAndSet(false, true)) {
@@ -109,9 +117,16 @@ public final class VideoExportService extends Service {
 
     @Override public void onCreate() {
         super.onCreate();
-        NotificationChannel channel = new NotificationChannel(
-                CHANNEL, "영상 내보내기", NotificationManager.IMPORTANCE_LOW);
-        getSystemService(NotificationManager.class).createNotificationChannel(channel);
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        manager.deleteNotificationChannel(OLD_CHANNEL);
+        NotificationChannel progressChannel = new NotificationChannel(
+                PROGRESS_CHANNEL, "영상 내보내기 진행", NotificationManager.IMPORTANCE_LOW);
+        progressChannel.setShowBadge(true);
+        manager.createNotificationChannel(progressChannel);
+        NotificationChannel completeChannel = new NotificationChannel(
+                COMPLETE_CHANNEL, "영상 내보내기 완료", NotificationManager.IMPORTANCE_LOW);
+        completeChannel.setShowBadge(false);
+        manager.createNotificationChannel(completeChannel);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -397,11 +412,12 @@ public final class VideoExportService extends Service {
         deleteTree(tempRoot);
         RUNNING.set(false);
         broadcast(message);
+        NotificationManager manager = getSystemService(NotificationManager.class);
         try {
-            getSystemService(NotificationManager.class).notify(
-                    NOTIFICATION_ID, notification(message, 100).setOngoing(false).build());
+            stopForeground(STOP_FOREGROUND_REMOVE);
         } catch (RuntimeException ignored) { }
-        try { stopForeground(STOP_FOREGROUND_DETACH); }
+        manager.cancel(NOTIFICATION_ID);
+        try { manager.notify(NOTIFICATION_ID, completionNotification(message).build()); }
         catch (RuntimeException ignored) { }
         stopSelf();
     }
@@ -421,17 +437,35 @@ public final class VideoExportService extends Service {
         PendingIntent cancel = PendingIntent.getService(this, 2,
                 new Intent(this, VideoExportService.class).setAction(ACTION_CANCEL),
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL)
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, PROGRESS_CHANNEL)
                 .setSmallIcon(R.drawable.ic_app)
                 .setContentTitle("티비룸 영상 내보내기")
                 .setContentText(message)
                 .setOnlyAlertOnce(true)
                 .setOngoing(true)
+                .setBadgeIconType(NotificationCompat.BADGE_ICON_SMALL)
+                .setNumber(1)
                 .setContentIntent(open)
                 .addAction(0, "취소", cancel);
         if (progress > 0) builder.setProgress(100, progress, false);
         else builder.setProgress(0, 0, true);
         return builder;
+    }
+
+    private NotificationCompat.Builder completionNotification(String message) {
+        PendingIntent open = PendingIntent.getActivity(this, 0,
+                new Intent(this, MainActivity.class),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        return new NotificationCompat.Builder(this, COMPLETE_CHANNEL)
+                .setSmallIcon(R.drawable.ic_app)
+                .setContentTitle("티비룸 영상 내보내기")
+                .setContentText(message)
+                .setOnlyAlertOnce(true)
+                .setOngoing(false)
+                .setAutoCancel(true)
+                .setBadgeIconType(NotificationCompat.BADGE_ICON_NONE)
+                .setNumber(0)
+                .setContentIntent(open);
     }
 
     private void broadcast(String message) {

@@ -58,6 +58,10 @@ public final class VideoDownloadService extends Service {
 
     public static boolean isRunning() { return RUNNING.get(); }
 
+    public static void clearFinishedNotification(Context context) {
+        context.getSystemService(NotificationManager.class).cancel(NOTIFICATION_ID);
+    }
+
     public static boolean start(Context context, CaptureState.Snapshot snapshot) {
         LibraryDatabase database = LibraryDatabase.get(context);
         synchronized (VideoDownloadService.class) {
@@ -82,6 +86,7 @@ public final class VideoDownloadService extends Service {
         super.onCreate();
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL, "영상 다운로드", NotificationManager.IMPORTANCE_LOW);
+        channel.setShowBadge(true);
         getSystemService(NotificationManager.class).createNotificationChannel(channel);
     }
 
@@ -150,6 +155,7 @@ public final class VideoDownloadService extends Service {
         }
         RUNNING.set(false);
         stopForeground(STOP_FOREGROUND_REMOVE);
+        getSystemService(NotificationManager.class).cancel(NOTIFICATION_ID);
         stopSelf();
     }
 
@@ -339,6 +345,8 @@ public final class VideoDownloadService extends Service {
                 .setContentText(message)
                 .setOnlyAlertOnce(true)
                 .setOngoing(true)
+                .setBadgeIconType(NotificationCompat.BADGE_ICON_SMALL)
+                .setNumber(1)
                 .setContentIntent(pending)
                 .addAction(0, "중단", stop);
         if (progress > 0) builder.setProgress(100, progress, false);
@@ -378,6 +386,7 @@ public final class VideoDownloadService extends Service {
         executor.shutdownNow();
         releaseWakeLock();
         RUNNING.set(false);
+        getSystemService(NotificationManager.class).cancel(NOTIFICATION_ID);
         super.onDestroy();
     }
 }

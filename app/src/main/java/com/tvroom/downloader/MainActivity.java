@@ -22,6 +22,7 @@ import com.tvroom.downloader.ui.SystemBarInsets;
 import com.tvroom.downloader.ui.TVRoomChannelView;
 import com.tvroom.downloader.data.LibraryDatabase;
 import com.tvroom.downloader.download.VideoDownloadService;
+import com.tvroom.downloader.export.VideoExportService;
 import com.tvroom.downloader.storage.TempFiles;
 
 public final class MainActivity extends AppCompatActivity {
@@ -35,6 +36,12 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        if (!VideoDownloadService.isRunning()) {
+            VideoDownloadService.clearFinishedNotification(this);
+        }
+        if (!VideoExportService.isRunning()) {
+            VideoExportService.clearFinishedNotification(this);
+        }
         exportFolderPicker = registerForActivityResult(
                 new ActivityResultContracts.OpenDocumentTree(), uri -> {
                     if (uri == null || downloadsView == null) return;
