@@ -38,7 +38,7 @@
         <service
             android:name=".export.VideoExportService"
             android:exported="false"
-            android:foregroundServiceType="mediaProcessing"
+            android:foregroundServiceType="dataSync|mediaProcessing"
             android:stopWithTask="false" />
     </application>
 </manifest>

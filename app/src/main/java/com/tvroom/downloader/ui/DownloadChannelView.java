@@ -127,7 +127,10 @@ public final class DownloadChannelView extends android.widget.FrameLayout {
             return;
         }
         if (!VideoExportService.start(activity, selected, folder)) {
-            Toast.makeText(activity, "이미 영상을 내보내고 있습니다.", Toast.LENGTH_LONG).show();
+            String message = VideoExportService.isRunning()
+                    ? "이미 영상을 내보내고 있습니다."
+                    : "내보내기 서비스를 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+            Toast.makeText(activity, message, Toast.LENGTH_LONG).show();
             return;
         }
         int count = selected.size();

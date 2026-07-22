@@ -8,6 +8,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -118,44 +119,79 @@ public final class VideoExportService extends Service {
         }
         if (intent == null || !ACTION_START.equals(intent.getAction())) return START_NOT_STICKY;
 
-        ServiceCompat.startForeground(this, NOTIFICATION_ID,
-                notification("영상 내보내기 준비 중", 0).build(),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING);
+        if (!startForegroundSafely()) return START_NOT_STICKY;
 
-        ArrayList<String> incomingTitles = intent.getStringArrayListExtra(EXTRA_TITLES);
-        ArrayList<String> incomingPaths = intent.getStringArrayListExtra(EXTRA_PATHS);
-        String folder = intent.getStringExtra(EXTRA_FOLDER);
-        if (incomingTitles == null || incomingPaths == null || incomingPaths.isEmpty() || folder == null) {
-            finishExport("내보낼 영상 정보를 읽지 못했습니다.");
-            return START_NOT_STICKY;
-        }
-        destination = DocumentFile.fromTreeUri(this, Uri.parse(folder));
-        if (destination == null || !destination.isDirectory() || !destination.canWrite()) {
-            finishExport("선택한 폴더에 쓸 수 없습니다.");
-            return START_NOT_STICKY;
-        }
+        try {
+            ArrayList<String> incomingTitles = intent.getStringArrayListExtra(EXTRA_TITLES);
+            ArrayList<String> incomingPaths = intent.getStringArrayListExtra(EXTRA_PATHS);
+            String folder = intent.getStringExtra(EXTRA_FOLDER);
+            if (incomingTitles == null || incomingPaths == null
+                    || incomingPaths.isEmpty() || folder == null) {
+                finishExport("내보낼 영상 정보를 읽지 못했습니다.");
+                return START_NOT_STICKY;
+            }
+            destination = DocumentFile.fromTreeUri(this, Uri.parse(folder));
+            if (destination == null || !destination.isDirectory() || !destination.canWrite()) {
+                finishExport("선택한 폴더에 쓸 수 없습니다.");
+                return START_NOT_STICKY;
+            }
 
-        titles.clear();
-        paths.clear();
-        int count = Math.min(incomingTitles.size(), incomingPaths.size());
-        for (int i = 0; i < count; i++) {
-            titles.add(incomingTitles.get(i));
-            paths.add(incomingPaths.get(i));
-        }
-        File cache = getExternalCacheDir();
-        if (cache == null) cache = getCacheDir();
-        tempRoot = new File(cache, "video_export_" + System.currentTimeMillis());
-        if (!tempRoot.mkdirs()) {
-            finishExport("내보내기 임시 폴더를 만들지 못했습니다.");
-            return START_NOT_STICKY;
-        }
+            titles.clear();
+            paths.clear();
+            int count = Math.min(incomingTitles.size(), incomingPaths.size());
+            for (int i = 0; i < count; i++) {
+                titles.add(incomingTitles.get(i));
+                paths.add(incomingPaths.get(i));
+            }
+            File cache = getExternalCacheDir();
+            if (cache == null) cache = getCacheDir();
+            tempRoot = new File(cache, "video_export_" + System.currentTimeMillis());
+            if (!tempRoot.mkdirs()) {
+                finishExport("내보내기 임시 폴더를 만들지 못했습니다.");
+                return START_NOT_STICKY;
+            }
 
-        broadcast("선택한 영상 " + paths.size() + "개를 내보내기 시작합니다.");
-        processNext();
+            broadcast("선택한 영상 " + paths.size() + "개를 내보내기 시작합니다.");
+            processNext();
+        } catch (RuntimeException error) {
+            finishExport("내보내기 시작 실패 · " + clean(error));
+        }
         return START_NOT_STICKY;
     }
 
+    private boolean startForegroundSafely() {
+        int preferredType = Build.VERSION.SDK_INT >= 35
+                ? ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
+                : ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
+        try {
+            ServiceCompat.startForeground(this, NOTIFICATION_ID,
+                    notification("영상 내보내기 준비 중", 0).build(), preferredType);
+            return true;
+        } catch (RuntimeException firstError) {
+            if (preferredType != ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) {
+                try {
+                    ServiceCompat.startForeground(this, NOTIFICATION_ID,
+                            notification("영상 내보내기 준비 중", 0).build(),
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+                    return true;
+                } catch (RuntimeException ignored) { }
+            }
+            RUNNING.set(false);
+            broadcast("내보내기 서비스를 시작하지 못했습니다 · " + clean(firstError));
+            stopSelf();
+            return false;
+        }
+    }
+
     private void processNext() {
+        try {
+            processNextSafely();
+        } catch (RuntimeException error) {
+            failCurrent("MP4 변환 준비 실패 · " + clean(error));
+        }
+    }
+
+    private void processNextSafely() {
         if (cancelled.get()) {
             finishExport("영상 내보내기를 취소했습니다.");
             return;
@@ -199,6 +235,10 @@ public final class VideoExportService extends Service {
             @Override public void onCompleted(Composition composition, ExportResult result) {
                 mainHandler.removeCallbacks(progressPoller);
                 transformer = null;
+                if (cancelled.get() || finishing.get()) {
+                    output.delete();
+                    return;
+                }
                 if (!output.isFile() || output.length() < 4096) {
                     output.delete();
                     failCurrent("완성된 MP4 파일이 비어 있습니다 · " + title);
@@ -229,55 +269,73 @@ public final class VideoExportService extends Service {
         @Override public void run() {
             Transformer active = transformer;
             if (active == null) return;
-            ProgressHolder holder = new ProgressHolder();
-            int state = active.getProgress(holder);
-            if (state == Transformer.PROGRESS_STATE_AVAILABLE) {
-                update("MP4 변환 " + (currentIndex + 1) + "/" + paths.size()
-                        + " · " + holder.progress + "%", overallProgress(holder.progress));
+            try {
+                ProgressHolder holder = new ProgressHolder();
+                int state = active.getProgress(holder);
+                if (state == Transformer.PROGRESS_STATE_AVAILABLE) {
+                    update("MP4 변환 " + (currentIndex + 1) + "/" + paths.size()
+                            + " · " + holder.progress + "%", overallProgress(holder.progress));
+                }
+                mainHandler.postDelayed(this, 700);
+            } catch (RuntimeException error) {
+                transformer = null;
+                try { active.cancel(); } catch (RuntimeException ignored) { }
+                failCurrent("MP4 변환 상태 확인 실패 · " + clean(error));
             }
-            mainHandler.postDelayed(this, 700);
         }
     };
 
     private void copyToDestination(File source, String title) {
-        fileExecutor.execute(() -> {
-            DocumentFile target = null;
-            try {
-                String name = uniqueName(safeName(title));
-                target = destination.createFile("video/mp4", name);
-                if (target == null) throw new IllegalStateException("대상 파일을 만들지 못했습니다.");
-                try (FileInputStream in = new FileInputStream(source);
-                     OutputStream out = getContentResolver().openOutputStream(target.getUri(), "w")) {
-                    if (out == null) throw new IllegalStateException("대상 파일을 열지 못했습니다.");
-                    byte[] buffer = new byte[1024 * 1024];
-                    int read;
-                    while ((read = in.read(buffer)) >= 0) {
-                        if (cancelled.get()) throw new InterruptedException("내보내기 취소");
-                        out.write(buffer, 0, read);
+        try {
+            fileExecutor.execute(() -> {
+                DocumentFile target = null;
+                try {
+                    String name = uniqueName(safeName(title));
+                    target = destination.createFile("video/mp4", name);
+                    if (target == null) {
+                        throw new IllegalStateException("대상 파일을 만들지 못했습니다.");
                     }
-                    out.flush();
+                    try (FileInputStream in = new FileInputStream(source);
+                         OutputStream out = getContentResolver().openOutputStream(target.getUri(), "w")) {
+                        if (out == null) {
+                            throw new IllegalStateException("대상 파일을 열지 못했습니다.");
+                        }
+                        byte[] buffer = new byte[1024 * 1024];
+                        int read;
+                        while ((read = in.read(buffer)) >= 0) {
+                            if (cancelled.get()) throw new InterruptedException("내보내기 취소");
+                            out.write(buffer, 0, read);
+                        }
+                        out.flush();
+                    }
+                    source.delete();
+                    mainHandler.post(() -> {
+                        if (cancelled.get() || finishing.get()) return;
+                        successCount++;
+                        currentIndex++;
+                        update("저장 완료 " + currentIndex + "/" + paths.size(), overallProgress(0));
+                        processNext();
+                    });
+                } catch (Exception error) {
+                    if (target != null) {
+                        try { target.delete(); } catch (RuntimeException ignored) { }
+                    }
+                    source.delete();
+                    String message = "파일 저장 실패 · " + title + " · " + clean(error);
+                    mainHandler.post(() -> {
+                        if (cancelled.get()) finishExport("영상 내보내기를 취소했습니다.");
+                        else failCurrent(message);
+                    });
                 }
-                source.delete();
-                mainHandler.post(() -> {
-                    if (cancelled.get() || finishing.get()) return;
-                    successCount++;
-                    currentIndex++;
-                    update("저장 완료 " + currentIndex + "/" + paths.size(), overallProgress(0));
-                    processNext();
-                });
-            } catch (Exception error) {
-                if (target != null) target.delete();
-                source.delete();
-                String message = "파일 저장 실패 · " + title + " · " + clean(error);
-                mainHandler.post(() -> {
-                    if (cancelled.get()) finishExport("영상 내보내기를 취소했습니다.");
-                    else failCurrent(message);
-                });
-            }
-        });
+            });
+        } catch (RuntimeException error) {
+            source.delete();
+            failCurrent("파일 저장 준비 실패 · " + title + " · " + clean(error));
+        }
     }
 
     private void failCurrent(String message) {
+        if (finishing.get()) return;
         if (cancelled.get()) {
             finishExport("영상 내보내기를 취소했습니다.");
             return;
@@ -325,15 +383,20 @@ public final class VideoExportService extends Service {
         deleteTree(tempRoot);
         RUNNING.set(false);
         broadcast(message);
-        getSystemService(NotificationManager.class).notify(
-                NOTIFICATION_ID, notification(message, 100).setOngoing(false).build());
-        stopForeground(STOP_FOREGROUND_DETACH);
+        try {
+            getSystemService(NotificationManager.class).notify(
+                    NOTIFICATION_ID, notification(message, 100).setOngoing(false).build());
+        } catch (RuntimeException ignored) { }
+        try { stopForeground(STOP_FOREGROUND_DETACH); }
+        catch (RuntimeException ignored) { }
         stopSelf();
     }
 
     private void update(String message, int progress) {
-        getSystemService(NotificationManager.class).notify(
-                NOTIFICATION_ID, notification(message, progress).build());
+        try {
+            getSystemService(NotificationManager.class).notify(
+                    NOTIFICATION_ID, notification(message, progress).build());
+        } catch (RuntimeException ignored) { }
         broadcast(message);
     }
 
@@ -378,6 +441,10 @@ public final class VideoExportService extends Service {
     }
 
     @Nullable @Override public IBinder onBind(Intent intent) { return null; }
+
+    @Override public void onTimeout(int startId, int fgsType) {
+        finishExport("Android의 작업 시간 제한으로 내보내기를 중단했습니다.");
+    }
 
     @Override public void onDestroy() {
         cancelled.set(true);
