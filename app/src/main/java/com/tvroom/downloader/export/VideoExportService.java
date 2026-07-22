@@ -18,6 +18,7 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
+import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.Clock;
@@ -227,7 +228,11 @@ public final class VideoExportService extends Service {
         // Preserve the original H.264/AAC samples whenever possible. Forcing output MIME types
         // makes Transformer initialize device encoders even though this export only needs an MP4
         // container, and some phones fail while creating those unnecessary encoders.
-        Transformer.Builder builder = new Transformer.Builder(this);
+        Transformer.Builder builder = new Transformer.Builder(this)
+                // Offline HLS can legitimately pause while crossing a discontinuity or opening
+                // the next group of local TS segments. The default 10-second watchdog treats
+                // that pause as a stuck muxer and aborts with ERROR_CODE_MUXING_TIMEOUT.
+                .setMaxDelayBetweenMuxerSamplesMs(C.TIME_UNSET);
         if (hls) {
             int tsFlags = DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
                     | DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES;
