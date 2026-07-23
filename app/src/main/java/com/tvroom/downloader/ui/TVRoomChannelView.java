@@ -46,6 +46,8 @@ import com.tvroom.downloader.download.VideoDownloadService;
 import com.tvroom.downloader.storage.AppSettings;
 import com.tvroom.downloader.web.CaptureState;
 
+import org.json.JSONObject;
+
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.Collections;
@@ -63,6 +65,7 @@ public final class TVRoomChannelView extends FrameLayout {
     private final CaptureState capture = new CaptureState();
     private boolean receiverRegistered;
     private boolean webViewUsable = true;
+    private boolean webVideoPlaying;
     private View fullscreenView;
     private WebChromeClient.CustomViewCallback fullscreenCallback;
     private int previousOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
@@ -182,6 +185,7 @@ public final class TVRoomChannelView extends FrameLayout {
 
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                 if (!webViewUsable) return;
+                setWebVideoPlaying(false);
                 hideSiteError();
                 capture.reset(url);
                 updateButtons();
@@ -245,8 +249,7 @@ public final class TVRoomChannelView extends FrameLayout {
                                                             JavaScriptReplyProxy replyProxy) {
                             String data = message.getData();
                             if (data != null && data.length() < 16384) {
-                                capture.acceptMessage(data);
-                                updateButtons();
+                                handleBridgeMessage(data);
                             }
                         }
                     });
@@ -255,8 +258,7 @@ public final class TVRoomChannelView extends FrameLayout {
                 @JavascriptInterface public void postMessage(String data) {
                     if (data != null && data.length() < 16384) {
                         post(() -> {
-                            capture.acceptMessage(data);
-                            updateButtons();
+                            handleBridgeMessage(data);
                         });
                     }
                 }
@@ -266,6 +268,22 @@ public final class TVRoomChannelView extends FrameLayout {
             WebViewCompat.addDocumentStartJavaScript(
                     webView, captureScript(), Collections.singleton("*"));
         }
+    }
+
+    private void handleBridgeMessage(String data) {
+        try {
+            JSONObject message = new JSONObject(data);
+            if ("playback".equals(message.optString("type"))) {
+                setWebVideoPlaying(message.optBoolean("playing", false));
+            }
+        } catch (Exception ignored) { }
+        capture.acceptMessage(data);
+        updateButtons();
+    }
+
+    private void setWebVideoPlaying(boolean playing) {
+        webVideoPlaying = playing;
+        webView.setKeepScreenOn(playing && isAttachedToWindow());
     }
 
     private String captureScript() {
@@ -440,6 +458,7 @@ public final class TVRoomChannelView extends FrameLayout {
 
     public void destroy() {
         exitFullscreen();
+        setWebVideoPlaying(false);
         if (!webViewUsable) return;
         webViewUsable = false;
         webView.stopLoading();
@@ -477,6 +496,7 @@ public final class TVRoomChannelView extends FrameLayout {
 
     @Override protected void onAttachedToWindow() {
         super.onAttachedToWindow();
+        webView.setKeepScreenOn(webVideoPlaying);
         if (!receiverRegistered) {
             ContextCompat.registerReceiver(activity, receiver,
                     new IntentFilter(VideoDownloadService.ACTION_PROGRESS),
@@ -486,6 +506,7 @@ public final class TVRoomChannelView extends FrameLayout {
     }
 
     @Override protected void onDetachedFromWindow() {
+        webView.setKeepScreenOn(false);
         if (receiverRegistered) {
             activity.unregisterReceiver(receiver);
             receiverRegistered = false;

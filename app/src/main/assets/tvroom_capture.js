@@ -25,6 +25,7 @@
 
   var capturedKey = '';
   var capturedIv = '';
+  var lastPlaybackState = null;
   function reportCrypto() {
     if (capturedKey || capturedIv) send({ type: 'crypto', key: capturedKey, iv: capturedIv });
   }
@@ -35,6 +36,25 @@
         var referer = '';
         try { if (/^https?:/i.test(location.href)) referer = location.href; } catch (_) {}
         send({ type: 'url', url: url, referer: referer });
+      }
+    } catch (_) {}
+  }
+
+  function reportPlaybackState() {
+    try {
+      var playing = false;
+      document.querySelectorAll('video').forEach(function (video) {
+        if (!video.__tvroomPlaybackHooked) {
+          video.__tvroomPlaybackHooked = true;
+          ['play', 'playing', 'pause', 'ended', 'emptied', 'abort'].forEach(function (event) {
+            video.addEventListener(event, reportPlaybackState, { passive: true });
+          });
+        }
+        if (!video.paused && !video.ended) playing = true;
+      });
+      if (lastPlaybackState !== playing) {
+        lastPlaybackState = playing;
+        send({ type: 'playback', playing: playing });
       }
     } catch (_) {}
   }
@@ -99,6 +119,7 @@
       document.querySelectorAll('video,source,iframe').forEach(function (node) {
         rememberUrl(node.currentSrc || node.src);
       });
+      reportPlaybackState();
       if (window.top === window) {
         var titleNode = document.querySelector('h1,.video-title,[class*="video-title"]');
         var ogTitle = document.querySelector('meta[property="og:title"]');

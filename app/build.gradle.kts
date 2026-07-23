@@ -15,8 +15,8 @@ android {
         applicationId = "com.tvroom.downloader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 17
-        versionName = "1.1.8"
+        versionCode = 19
+        versionName = "1.1.10"
     }
 
     signingConfigs {
