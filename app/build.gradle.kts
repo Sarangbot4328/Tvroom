@@ -6,6 +6,8 @@ val signingPath = System.getenv("ANDROID_KEYSTORE_PATH")?.takeIf { it.isNotBlank
 val signingStorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: ""
 val signingAlias = System.getenv("ANDROID_KEY_ALIAS") ?: ""
 val signingKeyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: ""
+val telegramBotToken = System.getenv("TELEGRAM_BOT_TOKEN") ?: ""
+val telegramAdminChatId = System.getenv("TELEGRAM_ADMIN_CHAT_ID") ?: ""
 
 android {
     namespace = "com.tvroom.downloader"
@@ -15,8 +17,14 @@ android {
         applicationId = "com.tvroom.downloader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 19
-        versionName = "1.1.10"
+        versionCode = 20
+        versionName = "1.1.11"
+        buildConfigField("String", "TELEGRAM_BOT_TOKEN", "\"$telegramBotToken\"")
+        buildConfigField("String", "TELEGRAM_ADMIN_CHAT_ID", "\"$telegramAdminChatId\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     signingConfigs {

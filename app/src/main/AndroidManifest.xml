@@ -22,6 +22,10 @@
             android:resizeableActivity="true"
             android:supportsPictureInPicture="true" />
         <activity
+            android:name=".activation.ActivationActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+        <activity
             android:name=".MainActivity"
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboardHidden"
             android:exported="true">

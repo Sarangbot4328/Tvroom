@@ -45,7 +45,7 @@
                 android:textSize="17sp" android:textStyle="bold" />
             <TextView android:id="@+id/app_version" android:layout_width="wrap_content"
                 android:layout_height="wrap_content" android:layout_marginTop="10dp"
-                android:text="버전 1.1.10" android:textColor="@color/text_secondary" android:textSize="14sp" />
+                android:text="버전 1.1.11" android:textColor="@color/text_secondary" android:textSize="14sp" />
             <View android:layout_width="match_parent" android:layout_height="1dp"
                 android:layout_marginTop="18dp" android:background="@color/divider" />
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -55,7 +55,7 @@
             <TextView android:id="@+id/update_notes" android:layout_width="match_parent"
                 android:layout_height="wrap_content" android:layout_marginTop="9dp"
                 android:lineSpacingExtra="4dp"
-                android:text="1.1.10 · 2026.07.23\n• 다운로드 영상 전체 화면 터치 잠금 지원\n• 티비룸·다운로드 영상 재생 중 화면 자동 꺼짐 방지\n• 다운로드 영상 마지막 위치에서 이어보기\n• 다운로드·내보내기 중 앱 아이콘 숫자 표시 및 완료 시 자동 제거\n• 여러 영상 순차 다운로드 대기열 지원\n• 오프라인 영상 길이 및 구간 멈춤 현상 개선\n• 여러 영상 선택 MP4 내보내기 지원\n• 티비룸 영상 전체 화면 재생 지원"
+                android:text="1.1.11 · 2026.07.23\n• 텔레그램 관리자 승인 기반 최초 활성화 지원\n• 다운로드 영상 전체 화면 터치 잠금 지원\n• 티비룸·다운로드 영상 재생 중 화면 자동 꺼짐 방지\n• 다운로드 영상 마지막 위치에서 이어보기\n• 다운로드·내보내기 중 앱 아이콘 숫자 표시 및 완료 시 자동 제거\n• 여러 영상 순차 다운로드 대기열 지원\n• 오프라인 영상 길이 및 구간 멈춤 현상 개선\n• 여러 영상 선택 MP4 내보내기 지원\n• 티비룸 영상 전체 화면 재생 지원"
                 android:textColor="@color/text_secondary" android:textSize="13sp" />
         </LinearLayout>
     </LinearLayout>

@@ -20,6 +20,8 @@ import com.tvroom.downloader.ui.DownloadChannelView;
 import com.tvroom.downloader.ui.SettingsChannelView;
 import com.tvroom.downloader.ui.SystemBarInsets;
 import com.tvroom.downloader.ui.TVRoomChannelView;
+import com.tvroom.downloader.activation.ActivationActivity;
+import com.tvroom.downloader.activation.ActivationStore;
 import com.tvroom.downloader.data.LibraryDatabase;
 import com.tvroom.downloader.download.VideoDownloadService;
 import com.tvroom.downloader.export.VideoExportService;
@@ -36,6 +38,11 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        if (!ActivationStore.isActivated(this)) {
+            startActivity(new Intent(this, ActivationActivity.class));
+            finish();
+            return;
+        }
         if (!VideoDownloadService.isRunning()) {
             VideoDownloadService.clearFinishedNotification(this);
         }
