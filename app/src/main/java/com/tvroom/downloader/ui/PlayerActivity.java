@@ -52,6 +52,7 @@ public final class PlayerActivity extends AppCompatActivity {
     private String mediaPath;
     private boolean immersive;
     private boolean inPictureInPicture;
+    private boolean pictureInPictureSession;
     private boolean controlsLocked;
     private final Runnable hideLockedActions = () -> {
         if (controlsLocked && actions != null && actions.getVisibility() == View.VISIBLE) {
@@ -72,7 +73,7 @@ public final class PlayerActivity extends AppCompatActivity {
         closeButton = findViewById(R.id.close);
         lockButton = findViewById(R.id.screen_lock);
         lockTouchGuard = findViewById(R.id.lock_touch_guard);
-        closeButton.setOnClickListener(v -> finish());
+        closeButton.setOnClickListener(v -> stopPlaybackAndFinish());
         pipButton.setOnClickListener(v -> enterPip());
         lockTouchGuard.setOnClickListener(v -> showLockedActions());
         lockButton.setOnClickListener(v -> {
@@ -110,7 +111,7 @@ public final class PlayerActivity extends AppCompatActivity {
                     showLockedActions();
                     return;
                 }
-                finish();
+                stopPlaybackAndFinish();
             }
         });
         updateLockAvailability();
@@ -315,11 +316,19 @@ public final class PlayerActivity extends AppCompatActivity {
                                                          @NonNull Configuration newConfig) {
         super.onPictureInPictureModeChanged(inPip, newConfig);
         inPictureInPicture = inPip;
+        if (inPip) pictureInPictureSession = true;
         if (inPip && controlsLocked) setControlsLocked(false);
         actions.setVisibility(inPip ? View.GONE : View.VISIBLE);
         actions.setAlpha(1f);
         playerView.setUseController(!inPip);
         if (!inPip) playerView.showController();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (Build.VERSION.SDK_INT < 26 || !isInPictureInPictureMode()) {
+            pictureInPictureSession = false;
+        }
     }
 
     @Override public void onUserLeaveHint() {
@@ -335,14 +344,34 @@ public final class PlayerActivity extends AppCompatActivity {
         super.onPause();
     }
 
+    @Override protected void onStop() {
+        super.onStop();
+        if (pictureInPictureSession && !isChangingConfigurations()) {
+            pictureInPictureSession = false;
+            releasePlayer(true);
+            if (!isFinishing()) finishAndRemoveTask();
+        }
+    }
+
+    private void stopPlaybackAndFinish() {
+        releasePlayer(true);
+        finishAndRemoveTask();
+    }
+
+    private void releasePlayer(boolean savePosition) {
+        if (player == null) return;
+        if (savePosition) savePlaybackPosition();
+        player.stop();
+        if (playerView != null) playerView.setPlayer(null);
+        player.release();
+        player = null;
+        setKeepScreenOn(false);
+    }
+
     @Override protected void onDestroy() {
         if (actions != null) actions.removeCallbacks(hideLockedActions);
         setKeepScreenOn(false);
-        if (player != null) {
-            savePlaybackPosition();
-            player.release();
-            player = null;
-        }
+        releasePlayer(true);
         super.onDestroy();
     }
 }
