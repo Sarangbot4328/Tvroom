@@ -18,6 +18,8 @@ jobs:
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -31,6 +33,22 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Validate Telegram activation secrets
+        shell: bash
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_ADMIN_CHAT_ID" ]; then
+            echo "::error::TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_CHAT_ID repository secrets are required."
+            exit 1
+          fi
+          if [[ ! "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{20,}$ ]]; then
+            echo "::error::TELEGRAM_BOT_TOKEN has an invalid format."
+            exit 1
+          fi
+          if [[ ! "$TELEGRAM_ADMIN_CHAT_ID" =~ ^-?[0-9]+$ ]]; then
+            echo "::error::TELEGRAM_ADMIN_CHAT_ID must be a numeric chat ID."
+            exit 1
+          fi
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
