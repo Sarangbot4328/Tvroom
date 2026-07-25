@@ -18,7 +18,6 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
-import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.Clock;
@@ -32,6 +31,7 @@ import androidx.media3.transformer.DefaultDecoderFactory;
 import androidx.media3.transformer.ExoPlayerAssetLoader;
 import androidx.media3.transformer.ExportException;
 import androidx.media3.transformer.ExportResult;
+import androidx.media3.transformer.InAppFragmentedMp4Muxer;
 import androidx.media3.transformer.ProgressHolder;
 import androidx.media3.transformer.Transformer;
 
@@ -41,6 +41,8 @@ import com.tvroom.downloader.data.VideoItem;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.BufferedReader;
+import java.io.FileReader;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
@@ -63,6 +65,9 @@ public final class VideoExportService extends Service {
     private static final String PROGRESS_CHANNEL = "tvroom_export_active_v3";
     private static final String COMPLETE_CHANNEL = "tvroom_export_no_badge_v2";
     private static final int NOTIFICATION_ID = 7202;
+    private static final long MAX_MUXER_SAMPLE_DELAY_MS = 120_000L;
+    private static final long PROGRESS_POLL_INTERVAL_MS = 2_000L;
+    private static final long MIN_TEMP_HEADROOM_BYTES = 256L * 1024L * 1024L;
     private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -239,16 +244,24 @@ public final class VideoExportService extends Service {
         MediaItem.Builder media = new MediaItem.Builder().setUri(Uri.fromFile(input));
         boolean hls = input.getName().toLowerCase(Locale.US).endsWith(".m3u8");
         if (hls) media.setMimeType(MimeTypes.APPLICATION_M3U8);
+        if (!hasEnoughTemporarySpace(input)) {
+            failCurrent("내부 저장 공간이 부족합니다 · " + title
+                    + " · 대용량 MP4 임시 파일을 만들 공간을 확보해 주세요.");
+            return;
+        }
 
         // Preserve the original H.264/AAC samples whenever possible. Forcing output MIME types
         // makes Transformer initialize device encoders even though this export only needs an MP4
         // container, and some phones fail while creating those unnecessary encoders.
         Transformer.Builder builder = new Transformer.Builder(this)
                 // Offline HLS can legitimately pause while crossing a discontinuity or opening
-                // the next group of local TS segments. The default 10-second watchdog treats
-                // that pause as a stuck muxer and aborts with ERROR_CODE_MUXING_TIMEOUT.
-                .setMaxDelayBetweenMuxerSamplesMs(C.TIME_UNSET);
+                // the next group of local TS segments. Allow a generous finite delay so a broken
+                // audio/video track cannot build an unbounded sample queue until the app runs OOM.
+                .setMaxDelayBetweenMuxerSamplesMs(MAX_MUXER_SAMPLE_DELAY_MS);
         if (hls) {
+            // A regular MP4 muxer retains a large sample table until a multi-hour file finishes.
+            // Fragmented MP4 flushes short groups while writing, keeping Java heap usage bounded.
+            builder.setMuxerFactory(new InAppFragmentedMp4Muxer.Factory());
             int tsFlags = DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
                     | DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES;
             HlsMediaSource.Factory mediaSourceFactory = new HlsMediaSource.Factory(
@@ -285,7 +298,7 @@ public final class VideoExportService extends Service {
         }).build();
         try {
             transformer.start(media.build(), output.getAbsolutePath());
-            mainHandler.postDelayed(progressPoller, 500);
+            mainHandler.postDelayed(progressPoller, PROGRESS_POLL_INTERVAL_MS);
         } catch (Exception error) {
             transformer = null;
             output.delete();
@@ -304,7 +317,7 @@ public final class VideoExportService extends Service {
                     update("MP4 변환 " + (currentIndex + 1) + "/" + paths.size()
                             + " · " + holder.progress + "%", overallProgress(holder.progress));
                 }
-                mainHandler.postDelayed(this, 700);
+                mainHandler.postDelayed(this, PROGRESS_POLL_INTERVAL_MS);
             } catch (RuntimeException error) {
                 transformer = null;
                 try { active.cancel(); } catch (RuntimeException ignored) { }
@@ -312,6 +325,46 @@ public final class VideoExportService extends Service {
             }
         }
     };
+
+    private boolean hasEnoughTemporarySpace(File input) {
+        long inputBytes = inputBytes(input);
+        if (inputBytes <= 0L || tempRoot == null) return true;
+        long headroom = Math.max(MIN_TEMP_HEADROOM_BYTES, inputBytes / 10L);
+        long required = inputBytes > Long.MAX_VALUE - headroom
+                ? Long.MAX_VALUE : inputBytes + headroom;
+        long available = tempRoot.getUsableSpace();
+        return available <= 0L || available >= required;
+    }
+
+    private static long inputBytes(File input) {
+        long total = Math.max(0L, input.length());
+        if (!input.getName().toLowerCase(Locale.US).endsWith(".m3u8")) return total;
+        File parent = input.getParentFile();
+        try (BufferedReader reader = new BufferedReader(new FileReader(input))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                Uri segmentUri = Uri.parse(line);
+                String scheme = segmentUri.getScheme();
+                File segment;
+                if (scheme == null || scheme.isEmpty()) {
+                    segment = new File(parent, line);
+                } else if ("file".equalsIgnoreCase(scheme)) {
+                    segment = new File(segmentUri.getPath());
+                } else {
+                    continue;
+                }
+                if (segment.isFile()) {
+                    long length = segment.length();
+                    total = total > Long.MAX_VALUE - length ? Long.MAX_VALUE : total + length;
+                }
+            }
+        } catch (Exception ignored) {
+            return Math.max(0L, input.length());
+        }
+        return total;
+    }
 
     private void copyToDestination(File source, String title) {
         try {

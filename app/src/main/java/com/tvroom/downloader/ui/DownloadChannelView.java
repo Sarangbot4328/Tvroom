@@ -54,7 +54,14 @@ public final class DownloadChannelView extends android.widget.FrameLayout {
         @Override public void onReceive(Context context, Intent intent) {
             String message = intent.getStringExtra(VideoDownloadService.EXTRA_MESSAGE);
             if (message != null) status.setText(message);
-            refresh();
+            if (VideoDownloadService.ACTION_PROGRESS.equals(intent.getAction())) {
+                refresh();
+            } else {
+                // Export progress does not change the video library. Re-querying every row and
+                // decoding every thumbnail for each progress tick causes severe memory churn
+                // during multi-hour exports.
+                updateExportControls();
+            }
         }
     };
 
