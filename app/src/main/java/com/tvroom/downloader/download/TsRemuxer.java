@@ -413,7 +413,6 @@ public final class TsRemuxer {
         long audioLastUs = UNSET;
         long videoStepUs = DEFAULT_VIDEO_STEP_US;
         long audioStepUs = DEFAULT_AUDIO_STEP_US;
-        long segmentBaseUs = 0L;
         int videoSamples = 0;
         int audioSamples = 0;
         int audioBatches = 0;
@@ -465,11 +464,8 @@ public final class TsRemuxer {
                                 "영상 조각 " + (batchStart + 1) + "~" + batchEnd + "이 비어 있습니다.");
                     }
 
-                    long segmentMaxRelativeUs = 0L;
                     long segmentVideoLastInputUs = UNSET;
                     long segmentAudioLastInputUs = UNSET;
-                    long previousInputUs = UNSET;
-                    long removedGapUs = 0L;
                     int segmentVideoSamples = 0;
                     int segmentAudioSamples = 0;
 
@@ -495,47 +491,36 @@ public final class TsRemuxer {
                             continue;
                         }
 
-                        // The downloaded playlist can declare every fragment slightly longer
-                        // than the samples it actually contains. Those small errors accumulate
-                        // into many extra minutes in a long MP4. Collapse only conspicuously large
-                        // jumps shared by the interleaved audio/video timeline; keep ordinary
-                        // frame spacing and A/V offsets untouched.
-                        if (previousInputUs != UNSET && inputTimeUs > previousInputUs) {
-                            long gapUs = inputTimeUs - previousInputUs;
-                            if (gapUs > MAX_CONTIGUOUS_SAMPLE_GAP_US) {
-                                long normalStepUs = Math.max(1L,
-                                        Math.min(videoStepUs, audioStepUs));
-                                removedGapUs += gapUs - normalStepUs;
-                            }
-                        }
-                        previousInputUs = inputTimeUs;
-                        long relativeUs = Math.max(0L,
-                                inputTimeUs - firstTimeUs - removedGapUs);
-                        long outputTimeUs = segmentBaseUs + relativeUs;
+                        long outputTimeUs;
                         if (video) {
+                            long stepUs = videoStepUs;
                             if (segmentVideoLastInputUs != UNSET && inputTimeUs > segmentVideoLastInputUs) {
                                 long delta = inputTimeUs - segmentVideoLastInputUs;
                                 if (delta <= MAX_CONTIGUOUS_SAMPLE_GAP_US) {
                                     videoStepUs = smoothStep(videoStepUs, delta);
+                                    stepUs = delta;
                                 }
                             }
-                            if (videoLastUs != UNSET && outputTimeUs <= videoLastUs) {
-                                outputTimeUs = videoLastUs + Math.max(1L, videoStepUs);
-                            }
+                            // Rebuild this track from its own preceding sample. MediaExtractor can
+                            // return interleaved audio/video samples out of timestamp order, so a
+                            // shared previous timestamp cannot reliably detect HLS boundary gaps.
+                            outputTimeUs = videoLastUs == UNSET
+                                    ? 0L : videoLastUs + Math.max(1L, stepUs);
                             segmentVideoLastInputUs = inputTimeUs;
                             videoLastUs = outputTimeUs;
                             segmentVideoSamples++;
                             videoSamples++;
                         } else {
+                            long stepUs = audioStepUs;
                             if (segmentAudioLastInputUs != UNSET && inputTimeUs > segmentAudioLastInputUs) {
                                 long delta = inputTimeUs - segmentAudioLastInputUs;
                                 if (delta <= MAX_CONTIGUOUS_SAMPLE_GAP_US) {
                                     audioStepUs = smoothStep(audioStepUs, delta);
+                                    stepUs = delta;
                                 }
                             }
-                            if (audioLastUs != UNSET && outputTimeUs <= audioLastUs) {
-                                outputTimeUs = audioLastUs + Math.max(1L, audioStepUs);
-                            }
+                            outputTimeUs = audioLastUs == UNSET
+                                    ? 0L : audioLastUs + Math.max(1L, stepUs);
                             segmentAudioLastInputUs = inputTimeUs;
                             audioLastUs = outputTimeUs;
                             segmentAudioSamples++;
@@ -549,7 +534,6 @@ public final class TsRemuxer {
                         info.presentationTimeUs = outputTimeUs;
                         info.flags = extractor.getSampleFlags();
                         muxer.writeSampleData(video ? videoTarget : audioTarget, buffer, info);
-                        segmentMaxRelativeUs = Math.max(segmentMaxRelativeUs, relativeUs);
                         extractor.advance();
                     }
 
@@ -558,9 +542,6 @@ public final class TsRemuxer {
                                 "영상 조각 " + (batchStart + 1) + "~" + batchEnd
                                         + "의 비디오 데이터가 비어 있습니다.");
                     }
-                    long tailStepUs = segmentAudioSamples > 0
-                            ? Math.max(videoStepUs, audioStepUs) : videoStepUs;
-                    segmentBaseUs += segmentMaxRelativeUs + Math.max(1L, tailStepUs);
                     if (segmentAudioSamples > 0) audioBatches++;
                     processedBatches++;
                     processedSegments = batchEnd;
