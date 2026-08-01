@@ -12,12 +12,14 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
+import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.Clock;
@@ -65,8 +67,8 @@ public final class VideoExportService extends Service {
     private static final String PROGRESS_CHANNEL = "tvroom_export_active_v3";
     private static final String COMPLETE_CHANNEL = "tvroom_export_no_badge_v2";
     private static final int NOTIFICATION_ID = 7202;
-    private static final long MAX_MUXER_SAMPLE_DELAY_MS = 120_000L;
     private static final long PROGRESS_POLL_INTERVAL_MS = 2_000L;
+    private static final long STALLED_EXPORT_TIMEOUT_MS = 20L * 60L * 1_000L;
     private static final long MIN_TEMP_HEADROOM_BYTES = 256L * 1024L * 1024L;
     private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
 
@@ -79,6 +81,11 @@ public final class VideoExportService extends Service {
     private DocumentFile destination;
     private File tempRoot;
     private Transformer transformer;
+    private File activeOutput;
+    private String activeTitle = "";
+    private long lastOutputBytes;
+    private long lastExportActivityMs;
+    private int lastExportProgress;
     private int currentIndex;
     private int successCount;
     private int failedCount;
@@ -253,15 +260,15 @@ public final class VideoExportService extends Service {
         // Preserve the original H.264/AAC samples whenever possible. Forcing output MIME types
         // makes Transformer initialize device encoders even though this export only needs an MP4
         // container, and some phones fail while creating those unnecessary encoders.
-        Transformer.Builder builder = new Transformer.Builder(this)
-                // Offline HLS can legitimately pause while crossing a discontinuity or opening
-                // the next group of local TS segments. Allow a generous finite delay so a broken
-                // audio/video track cannot build an unbounded sample queue until the app runs OOM.
-                .setMaxDelayBetweenMuxerSamplesMs(MAX_MUXER_SAMPLE_DELAY_MS);
+        Transformer.Builder builder = new Transformer.Builder(this);
         if (hls) {
             // A regular MP4 muxer retains a large sample table until a multi-hour file finishes.
             // Fragmented MP4 flushes short groups while writing, keeping Java heap usage bounded.
-            builder.setMuxerFactory(new InAppFragmentedMp4Muxer.Factory());
+            builder.setMuxerFactory(new InAppFragmentedMp4Muxer.Factory())
+                    // Some valid offline HLS files cross a long timestamp/discontinuity gap and
+                    // write no MP4 sample for over two minutes. Media3's sample watchdog cannot
+                    // distinguish that from a stall, so use our progress/file-growth watchdog.
+                    .setMaxDelayBetweenMuxerSamplesMs(C.TIME_UNSET);
             int tsFlags = DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
                     | DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES;
             HlsMediaSource.Factory mediaSourceFactory = new HlsMediaSource.Factory(
@@ -276,6 +283,7 @@ public final class VideoExportService extends Service {
             @Override public void onCompleted(Composition composition, ExportResult result) {
                 mainHandler.removeCallbacks(progressPoller);
                 transformer = null;
+                clearProgressWatchdog();
                 if (cancelled.get() || finishing.get()) {
                     output.delete();
                     return;
@@ -292,15 +300,18 @@ public final class VideoExportService extends Service {
                                           ExportException exception) {
                 mainHandler.removeCallbacks(progressPoller);
                 transformer = null;
+                clearProgressWatchdog();
                 output.delete();
                 failCurrent("MP4 변환 실패 · " + title + " · " + exportError(exception));
             }
         }).build();
         try {
+            startProgressWatchdog(output, title);
             transformer.start(media.build(), output.getAbsolutePath());
             mainHandler.postDelayed(progressPoller, PROGRESS_POLL_INTERVAL_MS);
         } catch (Exception error) {
             transformer = null;
+            clearProgressWatchdog();
             output.delete();
             failCurrent("MP4 변환을 시작하지 못했습니다 · " + title + " · " + clean(error));
         }
@@ -313,18 +324,56 @@ public final class VideoExportService extends Service {
             try {
                 ProgressHolder holder = new ProgressHolder();
                 int state = active.getProgress(holder);
+                long now = SystemClock.elapsedRealtime();
+                long outputBytes = activeOutput == null ? 0L : activeOutput.length();
+                boolean advanced = outputBytes > lastOutputBytes;
+                if (advanced) lastOutputBytes = outputBytes;
                 if (state == Transformer.PROGRESS_STATE_AVAILABLE) {
+                    if (holder.progress > lastExportProgress) {
+                        lastExportProgress = holder.progress;
+                        advanced = true;
+                    }
                     update("MP4 변환 " + (currentIndex + 1) + "/" + paths.size()
                             + " · " + holder.progress + "%", overallProgress(holder.progress));
+                }
+                if (advanced) lastExportActivityMs = now;
+                if (lastExportActivityMs > 0L
+                        && now - lastExportActivityMs >= STALLED_EXPORT_TIMEOUT_MS) {
+                    File stalledOutput = activeOutput;
+                    String stalledTitle = activeTitle;
+                    transformer = null;
+                    clearProgressWatchdog();
+                    try { active.cancel(); } catch (RuntimeException ignored) { }
+                    if (stalledOutput != null) stalledOutput.delete();
+                    failCurrent("MP4 변환이 20분 이상 진행되지 않아 중단했습니다 · "
+                            + stalledTitle);
+                    return;
                 }
                 mainHandler.postDelayed(this, PROGRESS_POLL_INTERVAL_MS);
             } catch (RuntimeException error) {
                 transformer = null;
+                clearProgressWatchdog();
                 try { active.cancel(); } catch (RuntimeException ignored) { }
                 failCurrent("MP4 변환 상태 확인 실패 · " + clean(error));
             }
         }
     };
+
+    private void startProgressWatchdog(File output, String title) {
+        activeOutput = output;
+        activeTitle = title;
+        lastOutputBytes = 0L;
+        lastExportProgress = -1;
+        lastExportActivityMs = SystemClock.elapsedRealtime();
+    }
+
+    private void clearProgressWatchdog() {
+        activeOutput = null;
+        activeTitle = "";
+        lastOutputBytes = 0L;
+        lastExportProgress = -1;
+        lastExportActivityMs = 0L;
+    }
 
     private boolean hasEnoughTemporarySpace(File input) {
         long inputBytes = inputBytes(input);
@@ -451,12 +500,14 @@ public final class VideoExportService extends Service {
         Transformer active = transformer;
         if (active != null) active.cancel();
         mainHandler.removeCallbacks(progressPoller);
+        clearProgressWatchdog();
         finishExport("영상 내보내기를 취소했습니다.");
     }
 
     private void finishExport(String message) {
         if (!finishing.compareAndSet(false, true)) return;
         mainHandler.removeCallbacks(progressPoller);
+        clearProgressWatchdog();
         Transformer active = transformer;
         transformer = null;
         if (active != null) {
@@ -562,6 +613,7 @@ public final class VideoExportService extends Service {
     @Override public void onDestroy() {
         cancelled.set(true);
         mainHandler.removeCallbacksAndMessages(null);
+        clearProgressWatchdog();
         if (transformer != null) {
             try { transformer.cancel(); } catch (Exception ignored) { }
         }
