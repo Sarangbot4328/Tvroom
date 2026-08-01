@@ -28,6 +28,10 @@ public final class TsRemuxer {
     private static final long UNSET = Long.MIN_VALUE;
     private static final long DEFAULT_VIDEO_STEP_US = 33_333L;
     private static final long DEFAULT_AUDIO_STEP_US = 21_333L;
+    // With both video and audio selected, normal TV content produces another sample far more
+    // often than this. A larger jump in our normalized offline TS is an artificial HLS segment
+    // gap (usually caused by an inaccurate EXTINF value), not playable media time.
+    private static final long MAX_CONTIGUOUS_SAMPLE_GAP_US = 250_000L;
     private static final int TS_PACKET_SIZE = 188;
     private static final int SEGMENTS_PER_BATCH = 8;
     private static final long MPEG_CLOCK_WRAP = 1L << 33;
@@ -464,6 +468,8 @@ public final class TsRemuxer {
                     long segmentMaxRelativeUs = 0L;
                     long segmentVideoLastInputUs = UNSET;
                     long segmentAudioLastInputUs = UNSET;
+                    long previousInputUs = UNSET;
+                    long removedGapUs = 0L;
                     int segmentVideoSamples = 0;
                     int segmentAudioSamples = 0;
 
@@ -489,12 +495,29 @@ public final class TsRemuxer {
                             continue;
                         }
 
-                        long relativeUs = Math.max(0L, inputTimeUs - firstTimeUs);
+                        // The downloaded playlist can declare every fragment slightly longer
+                        // than the samples it actually contains. Those small errors accumulate
+                        // into many extra minutes in a long MP4. Collapse only conspicuously large
+                        // jumps shared by the interleaved audio/video timeline; keep ordinary
+                        // frame spacing and A/V offsets untouched.
+                        if (previousInputUs != UNSET && inputTimeUs > previousInputUs) {
+                            long gapUs = inputTimeUs - previousInputUs;
+                            if (gapUs > MAX_CONTIGUOUS_SAMPLE_GAP_US) {
+                                long normalStepUs = Math.max(1L,
+                                        Math.min(videoStepUs, audioStepUs));
+                                removedGapUs += gapUs - normalStepUs;
+                            }
+                        }
+                        previousInputUs = inputTimeUs;
+                        long relativeUs = Math.max(0L,
+                                inputTimeUs - firstTimeUs - removedGapUs);
                         long outputTimeUs = segmentBaseUs + relativeUs;
                         if (video) {
                             if (segmentVideoLastInputUs != UNSET && inputTimeUs > segmentVideoLastInputUs) {
                                 long delta = inputTimeUs - segmentVideoLastInputUs;
-                                if (delta < 1_000_000L) videoStepUs = smoothStep(videoStepUs, delta);
+                                if (delta <= MAX_CONTIGUOUS_SAMPLE_GAP_US) {
+                                    videoStepUs = smoothStep(videoStepUs, delta);
+                                }
                             }
                             if (videoLastUs != UNSET && outputTimeUs <= videoLastUs) {
                                 outputTimeUs = videoLastUs + Math.max(1L, videoStepUs);
@@ -506,7 +529,9 @@ public final class TsRemuxer {
                         } else {
                             if (segmentAudioLastInputUs != UNSET && inputTimeUs > segmentAudioLastInputUs) {
                                 long delta = inputTimeUs - segmentAudioLastInputUs;
-                                if (delta < 1_000_000L) audioStepUs = smoothStep(audioStepUs, delta);
+                                if (delta <= MAX_CONTIGUOUS_SAMPLE_GAP_US) {
+                                    audioStepUs = smoothStep(audioStepUs, delta);
+                                }
                             }
                             if (audioLastUs != UNSET && outputTimeUs <= audioLastUs) {
                                 outputTimeUs = audioLastUs + Math.max(1L, audioStepUs);
