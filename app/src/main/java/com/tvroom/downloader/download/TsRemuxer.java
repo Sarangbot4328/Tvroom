@@ -6,20 +6,24 @@ import android.media.MediaFormat;
 import android.media.MediaMuxer;
 
 import java.io.ByteArrayOutputStream;
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.FileReader;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.net.URI;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-final class TsRemuxer {
-    interface Progress { void update(int completed, int total); }
+public final class TsRemuxer {
+    public interface Progress { void update(int completed, int total); }
 
     private static final long UNSET = Long.MIN_VALUE;
     private static final long DEFAULT_VIDEO_STEP_US = 33_333L;
@@ -30,6 +34,42 @@ final class TsRemuxer {
     private static final long DEFAULT_SEGMENT_TICKS = 6L * 90_000L;
 
     private TsRemuxer() { }
+
+    /**
+     * Converts the app's local offline HLS package without passing the whole playlist through
+     * Media3 Transformer. Some long playlists stop producing samples at a discontinuity even
+     * though ExoPlayer can keep playing them. Reading small TS batches avoids that deadlock and
+     * also keeps extractor memory bounded for multi-hour videos.
+     */
+    public static void remuxOfflineHls(File playlist, File output, Progress progress)
+            throws Exception {
+        if (playlist == null || !playlist.isFile()) {
+            throw new IOException("오프라인 재생목록을 찾을 수 없습니다.");
+        }
+        List<File> segments = new ArrayList<>();
+        File parent = playlist.getParentFile();
+        try (BufferedReader reader = new BufferedReader(new FileReader(playlist))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                File segment;
+                if (line.startsWith("file:")) {
+                    segment = new File(new URI(line));
+                } else {
+                    segment = new File(parent, line);
+                }
+                if (!segment.isFile()) {
+                    throw new IOException("영상 조각을 찾을 수 없습니다: " + line);
+                }
+                segments.add(segment);
+            }
+        }
+        if (segments.isEmpty()) {
+            throw new IOException("오프라인 재생목록에 영상 조각이 없습니다.");
+        }
+        remux(segments, output, progress);
+    }
 
     /**
      * Preserves decrypted HLS segments as a local VOD playlist while normalizing every segment
@@ -390,6 +430,9 @@ final class TsRemuxer {
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
 
             for (int batchStart = 0; batchStart < segments.size(); batchStart += SEGMENTS_PER_BATCH) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new InterruptedException("내보내기 취소");
+                }
                 int batchEnd = Math.min(segments.size(), batchStart + SEGMENTS_PER_BATCH);
                 createBatchFile(segments, batchStart, batchEnd, batchFile, psiHeader);
                 MediaExtractor extractor = new MediaExtractor();
@@ -425,6 +468,9 @@ final class TsRemuxer {
                     int segmentAudioSamples = 0;
 
                     while (true) {
+                        if (Thread.currentThread().isInterrupted()) {
+                            throw new InterruptedException("내보내기 취소");
+                        }
                         int sourceTrack = extractor.getSampleTrackIndex();
                         if (sourceTrack < 0) break;
                         boolean video = sourceTrack == videoSource;
