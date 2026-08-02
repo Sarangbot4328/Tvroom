@@ -45,7 +45,7 @@
                 android:textSize="17sp" android:textStyle="bold" />
             <TextView android:id="@+id/app_version" android:layout_width="wrap_content"
                 android:layout_height="wrap_content" android:layout_marginTop="10dp"
-                android:text="버전 1.1.17" android:textColor="@color/text_secondary" android:textSize="14sp" />
+                android:text="버전 1.1.19" android:textColor="@color/text_secondary" android:textSize="14sp" />
             <View android:layout_width="match_parent" android:layout_height="1dp"
                 android:layout_marginTop="18dp" android:background="@color/divider" />
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -55,7 +55,7 @@
             <TextView android:id="@+id/update_notes" android:layout_width="match_parent"
                 android:layout_height="wrap_content" android:layout_marginTop="9dp"
                 android:lineSpacingExtra="4dp"
-                android:text="1.1.17 · 2026.08.01\n• 영상·음성 트랙별 연속 시간표 재구성으로 MP4 길이 오차 수정\n• 파일 기록 순서가 시간순서와 다른 영상의 누적 공백 제거\n• MP4 변환이 특정 HLS 경계에서 멈추는 문제 수정\n• 재생 가능한 로컬 영상 조각을 짧은 묶음으로 직접 MP4 변환\n• 장시간 영상 변환 중 메모리 사용량 안정화\n• 내보내기 중 목록·썸네일 반복 갱신 제거 및 임시공간 검사\n• 팝업 재생창을 닫으면 영상과 음성 즉시 중지\n• 텔레그램 관리자 승인 기반 최초 활성화 지원\n• 다운로드 영상 전체 화면 터치 잠금 지원\n• 티비룸·다운로드 영상 재생 중 화면 자동 꺼짐 방지\n• 다운로드 영상 마지막 위치에서 이어보기\n• 다운로드·내보내기 중 앱 아이콘 숫자 표시 및 완료 시 자동 제거\n• 여러 영상 순차 다운로드 대기열 지원\n• 오프라인 영상 길이 및 구간 멈춤 현상 개선\n• 여러 영상 선택 MP4 내보내기 지원\n• 티비룸 영상 전체 화면 재생 지원"
+                android:text="1.1.19 · 2026.08.02\n• 영상 조각별 최대 5회 자동 재시도\n• 조각이 하나라도 누락되면 다운로드 완료 처리 차단\n• 다운로드 중 앱 화면 및 CPU 절전 방지\n• MP4 내보내기를 Media3 Fragmented MP4 변환 방식으로 복원\n• 직접 조각 변환 및 임의 시간 재구성 방식 제거\n• 정상 HLS 구간을 내부 muxer 제한으로 오인하지 않도록 별도 진행 감시 유지\n• 장시간 영상 내보내기 메모리 안정화\n• 내보내기 중 목록·썸네일 반복 갱신 제거 및 임시공간 검사\n• 팝업 재생창을 닫으면 영상과 음성 즉시 중지\n• 텔레그램 관리자 승인 기반 최초 활성화 지원\n• 다운로드 영상 전체 화면 터치 잠금 지원\n• 티비룸·다운로드 영상 재생 중 화면 자동 꺼짐 방지\n• 다운로드 영상 마지막 위치에서 이어보기\n• 다운로드·내보내기 중 앱 아이콘 숫자 표시 및 완료 시 자동 제거\n• 여러 영상 순차 다운로드 대기열 지원\n• 오프라인 영상 길이 및 구간 멈춤 현상 개선\n• 여러 영상 선택 MP4 내보내기 지원\n• 티비룸 영상 전체 화면 재생 지원"
                 android:textColor="@color/text_secondary" android:textSize="13sp" />
         </LinearLayout>
     </LinearLayout>

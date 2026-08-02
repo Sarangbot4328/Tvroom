@@ -37,6 +37,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class VideoDownloadService extends Service {
     public static final String ACTION_PROGRESS = "com.tvroom.downloader.DOWNLOAD_PROGRESS";
+    public static final String ACTION_STATE = "com.tvroom.downloader.DOWNLOAD_STATE";
     public static final String EXTRA_MESSAGE = "message";
     private static final String ACTION_START = "start";
     private static final String ACTION_STOP = "stop";
@@ -108,6 +109,7 @@ public final class VideoDownloadService extends Service {
             if (begin) processing = true;
         }
         RUNNING.set(true);
+        broadcastState();
         if (begin) {
             stopRequested.set(false);
             cancelled.set(false);
@@ -154,6 +156,7 @@ public final class VideoDownloadService extends Service {
             return;
         }
         RUNNING.set(false);
+        broadcastState();
         stopForeground(STOP_FOREGROUND_REMOVE);
         getSystemService(NotificationManager.class).cancel(NOTIFICATION_ID);
         stopSelf();
@@ -363,7 +366,9 @@ public final class VideoDownloadService extends Service {
         releaseWakeLock();
         wakeLock = getSystemService(PowerManager.class).newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK, "tvroom:download");
-        wakeLock.acquire(6 * 60 * 60 * 1000L);
+        // Held only while runJob is active and always released in finally/onDestroy. Keeping it
+        // untimed prevents Android CPU sleep from interrupting downloads longer than six hours.
+        wakeLock.acquire();
     }
 
     private void releaseWakeLock() {
@@ -386,7 +391,13 @@ public final class VideoDownloadService extends Service {
         executor.shutdownNow();
         releaseWakeLock();
         RUNNING.set(false);
+        broadcastState();
         getSystemService(NotificationManager.class).cancel(NOTIFICATION_ID);
         super.onDestroy();
+    }
+
+    private void broadcastState() {
+        sendBroadcast(new Intent(ACTION_STATE).setPackage(getPackageName())
+                .putExtra("running", RUNNING.get()));
     }
 }

@@ -19,18 +19,27 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
+import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.MimeTypes;
+import androidx.media3.common.util.Clock;
 import androidx.media3.common.util.UnstableApi;
+import androidx.media3.datasource.DefaultDataSource;
+import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory;
+import androidx.media3.exoplayer.hls.DefaultHlsExtractorFactory;
+import androidx.media3.exoplayer.hls.HlsMediaSource;
 import androidx.media3.transformer.Composition;
+import androidx.media3.transformer.DefaultDecoderFactory;
+import androidx.media3.transformer.ExoPlayerAssetLoader;
 import androidx.media3.transformer.ExportException;
 import androidx.media3.transformer.ExportResult;
+import androidx.media3.transformer.InAppFragmentedMp4Muxer;
 import androidx.media3.transformer.ProgressHolder;
 import androidx.media3.transformer.Transformer;
 
 import com.tvroom.downloader.MainActivity;
 import com.tvroom.downloader.R;
 import com.tvroom.downloader.data.VideoItem;
-import com.tvroom.downloader.download.TsRemuxer;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -42,7 +51,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @UnstableApi
@@ -73,7 +81,6 @@ public final class VideoExportService extends Service {
     private DocumentFile destination;
     private File tempRoot;
     private Transformer transformer;
-    private Future<?> activeFileTask;
     private File activeOutput;
     private String activeTitle = "";
     private long lastOutputBytes;
@@ -241,24 +248,37 @@ public final class VideoExportService extends Service {
         String title = titles.get(currentIndex);
         update("MP4 변환 " + (currentIndex + 1) + "/" + paths.size() + " · " + title, overallProgress(0));
 
+        MediaItem.Builder media = new MediaItem.Builder().setUri(Uri.fromFile(input));
         boolean hls = input.getName().toLowerCase(Locale.US).endsWith(".m3u8");
+        if (hls) media.setMimeType(MimeTypes.APPLICATION_M3U8);
         if (!hasEnoughTemporarySpace(input)) {
             failCurrent("내부 저장 공간이 부족합니다 · " + title
                     + " · 대용량 MP4 임시 파일을 만들 공간을 확보해 주세요.");
             return;
         }
 
-        if (hls) {
-            startOfflineHlsRemux(input, output, title);
-            return;
-        }
-
-        MediaItem.Builder media = new MediaItem.Builder().setUri(Uri.fromFile(input));
-
         // Preserve the original H.264/AAC samples whenever possible. Forcing output MIME types
         // makes Transformer initialize device encoders even though this export only needs an MP4
         // container, and some phones fail while creating those unnecessary encoders.
         Transformer.Builder builder = new Transformer.Builder(this);
+        if (hls) {
+            // Keep multi-hour exports memory-bounded by flushing fragmented MP4 groups instead
+            // of retaining one very large regular-MP4 sample table until the end.
+            builder.setMuxerFactory(new InAppFragmentedMp4Muxer.Factory())
+                    // Valid offline HLS can cross a long timestamp/discontinuity gap. Media3's
+                    // internal sample timeout mistakes that for a stalled export, so the service
+                    // uses its own progress/file-growth watchdog below instead.
+                    .setMaxDelayBetweenMuxerSamplesMs(C.TIME_UNSET);
+            int tsFlags = DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
+                    | DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES;
+            HlsMediaSource.Factory mediaSourceFactory = new HlsMediaSource.Factory(
+                    new DefaultDataSource.Factory(this))
+                    .setExtractorFactory(new DefaultHlsExtractorFactory(tsFlags, true));
+            ExoPlayerAssetLoader.Factory assetLoaderFactory = new ExoPlayerAssetLoader.Factory(
+                    this, new DefaultDecoderFactory.Builder(this).build(), Clock.DEFAULT,
+                    mediaSourceFactory);
+            builder.setAssetLoaderFactory(assetLoaderFactory);
+        }
         transformer = builder.addListener(new Transformer.Listener() {
             @Override public void onCompleted(Composition composition, ExportResult result) {
                 mainHandler.removeCallbacks(progressPoller);
@@ -292,51 +312,6 @@ public final class VideoExportService extends Service {
         } catch (Exception error) {
             transformer = null;
             clearProgressWatchdog();
-            output.delete();
-            failCurrent("MP4 변환을 시작하지 못했습니다 · " + title + " · " + clean(error));
-        }
-    }
-
-    private void startOfflineHlsRemux(File input, File output, String title) {
-        try {
-            activeFileTask = fileExecutor.submit(() -> {
-                try {
-                    TsRemuxer.remuxOfflineHls(input, output, (completed, total) -> {
-                        if (cancelled.get() || Thread.currentThread().isInterrupted()) return;
-                        int percent = Math.min(99,
-                                (int) (completed * 100L / Math.max(1, total)));
-                        mainHandler.post(() -> {
-                            if (!cancelled.get() && !finishing.get()) {
-                                update("MP4 변환 " + (currentIndex + 1) + "/" + paths.size()
-                                        + " · " + percent + "%", overallProgress(percent));
-                            }
-                        });
-                    });
-                    mainHandler.post(() -> {
-                        activeFileTask = null;
-                        if (cancelled.get() || finishing.get()) {
-                            output.delete();
-                            return;
-                        }
-                        if (!output.isFile() || output.length() < 4096) {
-                            output.delete();
-                            failCurrent("완성된 MP4 파일이 비어 있습니다 · " + title);
-                        } else {
-                            copyToDestination(output, title);
-                        }
-                    });
-                } catch (Exception error) {
-                    output.delete();
-                    String message = "MP4 변환 실패 · " + title + " · " + clean(error);
-                    mainHandler.post(() -> {
-                        activeFileTask = null;
-                        if (cancelled.get()) finishExport("영상 내보내기를 취소했습니다.");
-                        else failCurrent(message);
-                    });
-                }
-            });
-        } catch (RuntimeException error) {
-            activeFileTask = null;
             output.delete();
             failCurrent("MP4 변환을 시작하지 못했습니다 · " + title + " · " + clean(error));
         }
@@ -522,9 +497,6 @@ public final class VideoExportService extends Service {
 
     private void cancelExport() {
         cancelled.set(true);
-        Future<?> task = activeFileTask;
-        activeFileTask = null;
-        if (task != null) task.cancel(true);
         Transformer active = transformer;
         if (active != null) active.cancel();
         mainHandler.removeCallbacks(progressPoller);
@@ -538,9 +510,6 @@ public final class VideoExportService extends Service {
         clearProgressWatchdog();
         Transformer active = transformer;
         transformer = null;
-        Future<?> task = activeFileTask;
-        activeFileTask = null;
-        if (task != null) task.cancel(true);
         if (active != null) {
             try { active.cancel(); } catch (Exception ignored) { }
         }
@@ -648,9 +617,6 @@ public final class VideoExportService extends Service {
         if (transformer != null) {
             try { transformer.cancel(); } catch (Exception ignored) { }
         }
-        Future<?> task = activeFileTask;
-        activeFileTask = null;
-        if (task != null) task.cancel(true);
         fileExecutor.shutdownNow();
         deleteTree(tempRoot);
         RUNNING.set(false);

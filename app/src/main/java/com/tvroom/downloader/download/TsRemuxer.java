@@ -6,74 +6,30 @@ import android.media.MediaFormat;
 import android.media.MediaMuxer;
 
 import java.io.ByteArrayOutputStream;
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.FileReader;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.net.URI;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-public final class TsRemuxer {
-    public interface Progress { void update(int completed, int total); }
+final class TsRemuxer {
+    interface Progress { void update(int completed, int total); }
 
     private static final long UNSET = Long.MIN_VALUE;
     private static final long DEFAULT_VIDEO_STEP_US = 33_333L;
     private static final long DEFAULT_AUDIO_STEP_US = 21_333L;
-    // With both video and audio selected, normal TV content produces another sample far more
-    // often than this. A larger jump in our normalized offline TS is an artificial HLS segment
-    // gap (usually caused by an inaccurate EXTINF value), not playable media time.
-    private static final long MAX_CONTIGUOUS_SAMPLE_GAP_US = 250_000L;
     private static final int TS_PACKET_SIZE = 188;
     private static final int SEGMENTS_PER_BATCH = 8;
     private static final long MPEG_CLOCK_WRAP = 1L << 33;
     private static final long DEFAULT_SEGMENT_TICKS = 6L * 90_000L;
 
     private TsRemuxer() { }
-
-    /**
-     * Converts the app's local offline HLS package without passing the whole playlist through
-     * Media3 Transformer. Some long playlists stop producing samples at a discontinuity even
-     * though ExoPlayer can keep playing them. Reading small TS batches avoids that deadlock and
-     * also keeps extractor memory bounded for multi-hour videos.
-     */
-    public static void remuxOfflineHls(File playlist, File output, Progress progress)
-            throws Exception {
-        if (playlist == null || !playlist.isFile()) {
-            throw new IOException("오프라인 재생목록을 찾을 수 없습니다.");
-        }
-        List<File> segments = new ArrayList<>();
-        File parent = playlist.getParentFile();
-        try (BufferedReader reader = new BufferedReader(new FileReader(playlist))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                line = line.trim();
-                if (line.isEmpty() || line.startsWith("#")) continue;
-                File segment;
-                if (line.startsWith("file:")) {
-                    segment = new File(new URI(line));
-                } else {
-                    segment = new File(parent, line);
-                }
-                if (!segment.isFile()) {
-                    throw new IOException("영상 조각을 찾을 수 없습니다: " + line);
-                }
-                segments.add(segment);
-            }
-        }
-        if (segments.isEmpty()) {
-            throw new IOException("오프라인 재생목록에 영상 조각이 없습니다.");
-        }
-        remux(segments, output, progress);
-    }
 
     /**
      * Preserves decrypted HLS segments as a local VOD playlist while normalizing every segment
@@ -413,6 +369,7 @@ public final class TsRemuxer {
         long audioLastUs = UNSET;
         long videoStepUs = DEFAULT_VIDEO_STEP_US;
         long audioStepUs = DEFAULT_AUDIO_STEP_US;
+        long segmentBaseUs = 0L;
         int videoSamples = 0;
         int audioSamples = 0;
         int audioBatches = 0;
@@ -433,9 +390,6 @@ public final class TsRemuxer {
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
 
             for (int batchStart = 0; batchStart < segments.size(); batchStart += SEGMENTS_PER_BATCH) {
-                if (Thread.currentThread().isInterrupted()) {
-                    throw new InterruptedException("내보내기 취소");
-                }
                 int batchEnd = Math.min(segments.size(), batchStart + SEGMENTS_PER_BATCH);
                 createBatchFile(segments, batchStart, batchEnd, batchFile, psiHeader);
                 MediaExtractor extractor = new MediaExtractor();
@@ -464,15 +418,13 @@ public final class TsRemuxer {
                                 "영상 조각 " + (batchStart + 1) + "~" + batchEnd + "이 비어 있습니다.");
                     }
 
+                    long segmentMaxRelativeUs = 0L;
                     long segmentVideoLastInputUs = UNSET;
                     long segmentAudioLastInputUs = UNSET;
                     int segmentVideoSamples = 0;
                     int segmentAudioSamples = 0;
 
                     while (true) {
-                        if (Thread.currentThread().isInterrupted()) {
-                            throw new InterruptedException("내보내기 취소");
-                        }
                         int sourceTrack = extractor.getSampleTrackIndex();
                         if (sourceTrack < 0) break;
                         boolean video = sourceTrack == videoSource;
@@ -491,36 +443,28 @@ public final class TsRemuxer {
                             continue;
                         }
 
-                        long outputTimeUs;
+                        long relativeUs = Math.max(0L, inputTimeUs - firstTimeUs);
+                        long outputTimeUs = segmentBaseUs + relativeUs;
                         if (video) {
-                            long stepUs = videoStepUs;
                             if (segmentVideoLastInputUs != UNSET && inputTimeUs > segmentVideoLastInputUs) {
                                 long delta = inputTimeUs - segmentVideoLastInputUs;
-                                if (delta <= MAX_CONTIGUOUS_SAMPLE_GAP_US) {
-                                    videoStepUs = smoothStep(videoStepUs, delta);
-                                    stepUs = delta;
-                                }
+                                if (delta < 1_000_000L) videoStepUs = smoothStep(videoStepUs, delta);
                             }
-                            // Rebuild this track from its own preceding sample. MediaExtractor can
-                            // return interleaved audio/video samples out of timestamp order, so a
-                            // shared previous timestamp cannot reliably detect HLS boundary gaps.
-                            outputTimeUs = videoLastUs == UNSET
-                                    ? 0L : videoLastUs + Math.max(1L, stepUs);
+                            if (videoLastUs != UNSET && outputTimeUs <= videoLastUs) {
+                                outputTimeUs = videoLastUs + Math.max(1L, videoStepUs);
+                            }
                             segmentVideoLastInputUs = inputTimeUs;
                             videoLastUs = outputTimeUs;
                             segmentVideoSamples++;
                             videoSamples++;
                         } else {
-                            long stepUs = audioStepUs;
                             if (segmentAudioLastInputUs != UNSET && inputTimeUs > segmentAudioLastInputUs) {
                                 long delta = inputTimeUs - segmentAudioLastInputUs;
-                                if (delta <= MAX_CONTIGUOUS_SAMPLE_GAP_US) {
-                                    audioStepUs = smoothStep(audioStepUs, delta);
-                                    stepUs = delta;
-                                }
+                                if (delta < 1_000_000L) audioStepUs = smoothStep(audioStepUs, delta);
                             }
-                            outputTimeUs = audioLastUs == UNSET
-                                    ? 0L : audioLastUs + Math.max(1L, stepUs);
+                            if (audioLastUs != UNSET && outputTimeUs <= audioLastUs) {
+                                outputTimeUs = audioLastUs + Math.max(1L, audioStepUs);
+                            }
                             segmentAudioLastInputUs = inputTimeUs;
                             audioLastUs = outputTimeUs;
                             segmentAudioSamples++;
@@ -534,6 +478,7 @@ public final class TsRemuxer {
                         info.presentationTimeUs = outputTimeUs;
                         info.flags = extractor.getSampleFlags();
                         muxer.writeSampleData(video ? videoTarget : audioTarget, buffer, info);
+                        segmentMaxRelativeUs = Math.max(segmentMaxRelativeUs, relativeUs);
                         extractor.advance();
                     }
 
@@ -542,6 +487,9 @@ public final class TsRemuxer {
                                 "영상 조각 " + (batchStart + 1) + "~" + batchEnd
                                         + "의 비디오 데이터가 비어 있습니다.");
                     }
+                    long tailStepUs = segmentAudioSamples > 0
+                            ? Math.max(videoStepUs, audioStepUs) : videoStepUs;
+                    segmentBaseUs += segmentMaxRelativeUs + Math.max(1L, tailStepUs);
                     if (segmentAudioSamples > 0) audioBatches++;
                     processedBatches++;
                     processedSegments = batchEnd;

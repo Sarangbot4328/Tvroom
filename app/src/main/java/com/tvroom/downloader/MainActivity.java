@@ -1,6 +1,9 @@
 package com.tvroom.downloader;
 
 import android.Manifest;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.Intent;
 import android.net.Uri;
@@ -8,6 +11,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.view.WindowManager;
 
 import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
@@ -35,6 +39,12 @@ public final class MainActivity extends AppCompatActivity {
     private SettingsChannelView settingsView;
     private ActivityResultLauncher<Uri> exportFolderPicker;
     private int selected;
+    private boolean downloadStateReceiverRegistered;
+    private final BroadcastReceiver downloadStateReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            updateDownloadScreenAwake();
+        }
+    };
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -76,6 +86,11 @@ public final class MainActivity extends AppCompatActivity {
         downloadsButton.setOnClickListener(v -> showDownloads());
         settingsButton.setOnClickListener(v -> showSettings());
         showTvroom();
+        ContextCompat.registerReceiver(this, downloadStateReceiver,
+                new IntentFilter(VideoDownloadService.ACTION_STATE),
+                ContextCompat.RECEIVER_NOT_EXPORTED);
+        downloadStateReceiverRegistered = true;
+        updateDownloadScreenAwake();
         requestNotificationPermission();
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override public void handleOnBackPressed() {
@@ -125,7 +140,25 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void updateDownloadScreenAwake() {
+        if (VideoDownloadService.isRunning()) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        updateDownloadScreenAwake();
+    }
+
     @Override protected void onDestroy() {
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if (downloadStateReceiverRegistered) {
+            unregisterReceiver(downloadStateReceiver);
+            downloadStateReceiverRegistered = false;
+        }
         if (tvroomView != null) tvroomView.destroy();
         super.onDestroy();
     }

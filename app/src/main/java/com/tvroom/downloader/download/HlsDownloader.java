@@ -32,6 +32,8 @@ final class HlsDownloader {
     private static final Pattern ATTR_IV = Pattern.compile("IV=0x([0-9a-f]+)", Pattern.CASE_INSENSITIVE);
     private static final Pattern BANDWIDTH = Pattern.compile("BANDWIDTH=(\\d+)", Pattern.CASE_INSENSITIVE);
     private static final Pattern SEGMENT_LIST = Pattern.compile("(.*segment_list_)(\\d+)(\\.png(?:[?#].*)?)", Pattern.CASE_INSENSITIVE);
+    private static final int SEGMENT_MAX_ATTEMPTS = 5;
+    private static final long RETRY_BASE_DELAY_MS = 1_000L;
     private final CaptureState.Snapshot job;
     private final Progress progress;
     private final Cancellation cancellation;
@@ -117,6 +119,9 @@ final class HlsDownloader {
         byte[] iv = playlist.iv != null ? playlist.iv : ivOrZero(job.ivHex);
         if (custom != null) {
             if (key == null) throw new IllegalStateException("segment_list 암호화 키를 찾지 못했습니다.");
+            if (playlist.segments.size() > 1) {
+                return downloadKnownSegmentList(playlist, segmentDir, key, iv);
+            }
             List<File> parts = downloadSegmentList(
                     custom, segmentDir, key, iv, playlist.mediaSequence);
             DownloadedSegments downloaded = new DownloadedSegments(parts);
@@ -138,35 +143,11 @@ final class HlsDownloader {
         List<File> parts = new ArrayList<>();
         DownloadedSegments downloaded = new DownloadedSegments(parts);
         int total = playlist.segments.size();
-        int consecutiveBad = 0;
-        boolean missingBeforeNext = false;
         for (int i = 0; i < total; i++) {
             checkCancelled();
             progress.update("영상 조각 다운로드 " + (i + 1) + "/" + total,
                     12 + (int) ((i + 1L) * 75 / total));
-            byte[] data;
-            try {
-                data = fetch(playlist.segments.get(i), job.pageUrl, false);
-                if (key != null && playlist.encrypted) {
-                    long sequence = playlist.mediaSequence + i;
-                    data = decryptBest(data, key, iv, sequence,
-                            playlist.mediaSequence, playlist.mediaSequence);
-                } else {
-                    data = normalizeTs(data);
-                }
-            } catch (InterruptedException error) {
-                throw error;
-            } catch (Exception error) {
-                consecutiveBad++;
-                if (parts.isEmpty() && consecutiveBad >= 5) {
-                    throw new IllegalStateException(
-                            "초반 영상 조각을 연속으로 복원하지 못했습니다. 키 또는 IV가 맞지 않습니다.",
-                            error);
-                }
-                missingBeforeNext = true;
-                continue;
-            }
-            consecutiveBad = 0;
+            byte[] data = downloadPlaylistSegment(playlist, key, iv, i, total);
             File part = new File(segmentDir, String.format(Locale.US, "seg_%06d.ts", i));
             writePart(part, data);
             parts.add(part);
@@ -174,12 +155,75 @@ final class HlsDownloader {
                     ? playlist.durations.get(i) : Double.NaN);
             boolean originalDiscontinuity = i < playlist.discontinuities.size()
                     && playlist.discontinuities.get(i);
-            downloaded.discontinuities.add(originalDiscontinuity
-                    || (missingBeforeNext && parts.size() > 1));
-            missingBeforeNext = false;
+            downloaded.discontinuities.add(originalDiscontinuity);
         }
-        if (parts.isEmpty()) throw new IllegalStateException("복원 가능한 HLS 영상 조각이 없습니다.");
+        if (parts.size() != total) {
+            throw new IllegalStateException("영상 조각이 누락되어 다운로드를 완료하지 않았습니다.");
+        }
         return downloaded;
+    }
+
+    private DownloadedSegments downloadKnownSegmentList(Playlist playlist, File segmentDir,
+                                                         byte[] key, byte[] iv) throws Exception {
+        ensureDirectory(segmentDir);
+        List<File> parts = new ArrayList<>();
+        DownloadedSegments downloaded = new DownloadedSegments(parts);
+        int total = playlist.segments.size();
+        long firstIndex = playlist.mediaSequence;
+        Matcher first = SEGMENT_LIST.matcher(playlist.segments.get(0));
+        if (first.matches()) firstIndex = Long.parseLong(first.group(2));
+
+        for (int i = 0; i < total; i++) {
+            checkCancelled();
+            String url = playlist.segments.get(i);
+            Matcher matcher = SEGMENT_LIST.matcher(url);
+            long sourceIndex = matcher.matches()
+                    ? Long.parseLong(matcher.group(2)) : firstIndex + i;
+            progress.update("암호화 영상 조각 다운로드 " + (i + 1) + "/" + total,
+                    12 + (int) ((i + 1L) * 75 / Math.max(1, total)));
+            byte[] ts = downloadCustomSegment(url, key, iv, sourceIndex, firstIndex,
+                    playlist.mediaSequence, i);
+            File part = new File(segmentDir, String.format(Locale.US, "seg_%06d.ts", i));
+            writePart(part, ts);
+            parts.add(part);
+            downloaded.durations.add(i < playlist.durations.size()
+                    ? playlist.durations.get(i) : Double.NaN);
+            downloaded.discontinuities.add(i < playlist.discontinuities.size()
+                    && playlist.discontinuities.get(i));
+        }
+        if (parts.size() != total) {
+            throw new IllegalStateException("암호화 영상 조각이 누락되어 다운로드를 완료하지 않았습니다.");
+        }
+        return downloaded;
+    }
+
+    private byte[] downloadPlaylistSegment(Playlist playlist, byte[] key, byte[] iv,
+                                           int index, int total) throws Exception {
+        Exception last = null;
+        for (int attempt = 1; attempt <= SEGMENT_MAX_ATTEMPTS; attempt++) {
+            checkCancelled();
+            try {
+                byte[] data = fetch(playlist.segments.get(index), job.pageUrl, false);
+                if (key != null && playlist.encrypted) {
+                    long sequence = playlist.mediaSequence + index;
+                    return decryptBest(data, key, iv, sequence,
+                            playlist.mediaSequence, playlist.mediaSequence);
+                }
+                return normalizeTs(data);
+            } catch (InterruptedException error) {
+                throw error;
+            } catch (Exception error) {
+                last = error;
+                if (attempt < SEGMENT_MAX_ATTEMPTS) {
+                    progress.update("영상 조각 재시도 " + (index + 1) + "/" + total
+                                    + " · " + (attempt + 1) + "/" + SEGMENT_MAX_ATTEMPTS,
+                            12 + (int) ((index + 1L) * 75 / Math.max(1, total)));
+                    waitBeforeRetry(attempt);
+                }
+            }
+        }
+        throw new IllegalStateException("영상 조각 " + (index + 1) + "/" + total
+                + "을 " + SEGMENT_MAX_ATTEMPTS + "회 시도했지만 받지 못했습니다.", last);
     }
 
     private List<File> downloadSegmentList(String seedUrl, File segmentDir,
@@ -189,33 +233,32 @@ final class HlsDownloader {
         String prefix = matcher.group(1), suffix = matcher.group(3);
         int captured = Integer.parseInt(matcher.group(2));
         int start = probe(prefix + 0 + suffix) ? 0 : captured;
-        int misses = 0, saved = 0, index = start, consecutiveBad = 0;
+        int misses = 0, saved = 0, index = start;
+        int firstMissing = -1;
         ensureDirectory(segmentDir);
         List<File> parts = new ArrayList<>();
         while (index < start + 10000 && misses < 3) {
             checkCancelled();
             String url = prefix + index + suffix;
-            byte[] encrypted;
-            try { encrypted = fetch(url, job.pageUrl, true); }
-            catch (HttpStatusException error) {
-                if (error.code == 404 || error.code == 403) { misses++; index++; continue; }
-                throw error;
-            }
-            misses = 0;
             byte[] ts;
             try {
-                ts = decryptBest(encrypted, key, iv, index, start, mediaSequence);
-            } catch (Exception error) {
-                consecutiveBad++;
-                if (parts.isEmpty() && consecutiveBad >= 5) {
-                    throw new IllegalStateException(
-                            "초반 영상 조각을 연속으로 복원하지 못했습니다. 키 또는 IV가 맞지 않습니다.",
-                            error);
-                }
-                index++;
-                continue;
+                ts = downloadCustomSegment(url, key, iv, index, start, mediaSequence, saved);
             }
-            consecutiveBad = 0;
+            catch (HttpStatusException error) {
+                if (error.code == 404 || error.code == 403) {
+                    if (firstMissing < 0) firstMissing = index;
+                    misses++;
+                    index++;
+                    continue;
+                }
+                throw error;
+            }
+            if (misses > 0) {
+                throw new IllegalStateException("중간 영상 조각 " + firstMissing
+                        + "번이 누락되어 다운로드를 완료하지 않았습니다.");
+            }
+            misses = 0;
+            firstMissing = -1;
             File part = new File(segmentDir, String.format(Locale.US, "seg_%06d.ts", index));
             writePart(part, ts);
             parts.add(part);
@@ -225,7 +268,46 @@ final class HlsDownloader {
             index++;
         }
         if (saved == 0) throw new IllegalStateException("복원 가능한 segment_list 조각이 없습니다.");
+        if (index >= start + 10000 && misses < 3) {
+            throw new IllegalStateException("영상 조각 끝을 확인하지 못해 다운로드를 완료하지 않았습니다.");
+        }
         return parts;
+    }
+
+    private byte[] downloadCustomSegment(String url, byte[] key, byte[] iv, long index,
+                                         long firstIndex, long mediaSequence, int saved)
+            throws Exception {
+        Exception last = null;
+        for (int attempt = 1; attempt <= SEGMENT_MAX_ATTEMPTS; attempt++) {
+            checkCancelled();
+            try {
+                byte[] encrypted = fetch(url, job.pageUrl, true);
+                return decryptBest(encrypted, key, iv, index, firstIndex, mediaSequence);
+            } catch (InterruptedException error) {
+                throw error;
+            } catch (Exception error) {
+                last = error;
+                if (attempt < SEGMENT_MAX_ATTEMPTS) {
+                    progress.update("암호화 영상 조각 재시도 " + index + " · "
+                                    + (attempt + 1) + "/" + SEGMENT_MAX_ATTEMPTS,
+                            Math.min(88, 12 + saved / 2));
+                    waitBeforeRetry(attempt);
+                }
+            }
+        }
+        if (last instanceof HttpStatusException) throw (HttpStatusException) last;
+        throw new IllegalStateException("암호화 영상 조각 " + index + "번을 "
+                + SEGMENT_MAX_ATTEMPTS + "회 시도했지만 복원하지 못했습니다.", last);
+    }
+
+    private void waitBeforeRetry(int failedAttempt) throws InterruptedException {
+        long remaining = RETRY_BASE_DELAY_MS << Math.min(3, Math.max(0, failedAttempt - 1));
+        while (remaining > 0L) {
+            checkCancelled();
+            long pause = Math.min(250L, remaining);
+            Thread.sleep(pause);
+            remaining -= pause;
+        }
     }
 
     private static void ensureDirectory(File directory) {
@@ -237,6 +319,10 @@ final class HlsDownloader {
     private static void writePart(File output, byte[] data) throws Exception {
         try (FileOutputStream out = new FileOutputStream(output)) {
             out.write(data);
+        }
+        if (!output.isFile() || output.length() != data.length) {
+            output.delete();
+            throw new IllegalStateException("영상 조각 파일을 완전히 저장하지 못했습니다.");
         }
     }
 
@@ -257,8 +343,18 @@ final class HlsDownloader {
     }
 
     private boolean probe(String url) throws Exception {
-        try { return fetch(url, job.pageUrl, true).length > 0; }
-        catch (HttpStatusException error) { return false; }
+        Exception last = null;
+        for (int attempt = 1; attempt <= SEGMENT_MAX_ATTEMPTS; attempt++) {
+            try { return fetch(url, job.pageUrl, true).length > 0; }
+            catch (InterruptedException error) { throw error; }
+            catch (HttpStatusException error) {
+                last = error;
+                if (error.code == 404 || error.code == 403) return false;
+            }
+            catch (Exception error) { last = error; }
+            if (attempt < SEGMENT_MAX_ATTEMPTS) waitBeforeRetry(attempt);
+        }
+        throw last == null ? new IllegalStateException("첫 영상 조각 확인 실패") : last;
     }
 
     private byte[] fetch(String value, String referer, boolean allowImage) throws Exception {
