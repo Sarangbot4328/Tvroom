@@ -11,6 +11,17 @@ public final class AppSettings {
 
     private AppSettings() { }
 
+    public static int getDownloadColumns(Context context) {
+        int columns = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getInt("download_columns", 1);
+        return Math.max(1, Math.min(3, columns));
+    }
+
+    public static void setDownloadColumns(Context context, int columns) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putInt("download_columns", Math.max(1, Math.min(3, columns))).apply();
+    }
+
     public static String getSiteUrl(Context context) {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .getString(KEY_URL, DEFAULT_URL);

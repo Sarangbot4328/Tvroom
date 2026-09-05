@@ -66,6 +66,7 @@ public final class VideoDownloadService extends Service {
     public static boolean start(Context context, CaptureState.Snapshot snapshot) {
         LibraryDatabase database = LibraryDatabase.get(context);
         synchronized (VideoDownloadService.class) {
+            if (database.hasDownload(snapshot.pageUrl)) return false;
             VideoItem existing = database.getItem(snapshot.id);
             if (existing != null && ("queued".equals(existing.status) || "downloading".equals(existing.status))) {
                 return false;
@@ -75,7 +76,12 @@ public final class VideoDownloadService extends Service {
         }
         Intent intent = new Intent(context, VideoDownloadService.class).setAction(ACTION_START)
                 .putExtra(EXTRA_JOB, snapshot.toJson());
-        ContextCompat.startForegroundService(context, intent);
+        try {
+            ContextCompat.startForegroundService(context, intent);
+        } catch (RuntimeException error) {
+            database.updateProgress(snapshot.id, "error", 0, "다운로드 서비스 시작 실패");
+            throw error;
+        }
         return true;
     }
 
@@ -178,6 +184,7 @@ public final class VideoDownloadService extends Service {
     private void runJob(String raw) {
         CaptureState.Snapshot job = null;
         File workDir = null;
+        boolean deleteWorkDir = false;
         try {
             job = CaptureState.Snapshot.fromJson(raw);
             acquireWakeLock();
@@ -207,14 +214,17 @@ public final class VideoDownloadService extends Service {
                         new File(workDir, "offline_segments"), job.title);
             }
             LibraryDatabase.get(this).complete(job.id, thumbnail, finalFile.getAbsolutePath());
+            deleteWorkDir = true;
             updateNotification("다운로드 완료", 100);
             broadcast("다운로드 완료 · " + job.title);
         } catch (InterruptedException error) {
+            deleteWorkDir = true;
             if (job != null) LibraryDatabase.get(this).updateProgress(
                     job.id, "stopped", 0, "사용자가 다운로드를 중단했습니다.");
             broadcast("다운로드를 중단하고 임시 파일을 삭제했습니다.");
         } catch (Exception error) {
             if (cancelled.get() || stopRequested.get()) {
+                deleteWorkDir = true;
                 if (job != null) LibraryDatabase.get(this).updateProgress(
                         job.id, "stopped", 0, "사용자가 다운로드를 중단했습니다.");
                 broadcast("다운로드를 중단하고 임시 파일을 삭제했습니다.");
@@ -225,7 +235,9 @@ public final class VideoDownloadService extends Service {
             }
         } finally {
             activeConnection = null;
-            if (workDir != null && job != null) TempFiles.deleteJob(this, job.id);
+            // Preserve valid pieces after a recoverable failure so a retry for the same video only
+            // requests missing indexes. Completed and explicitly stopped jobs are cleaned up.
+            if (deleteWorkDir && workDir != null && job != null) TempFiles.deleteJob(this, job.id);
             releaseWakeLock();
         }
     }

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:layout_marginBottom="10dp" android:background="@color/surface"
+    android:clickable="true" android:focusable="true" android:foreground="?attr/selectableItemBackground"
+    android:orientation="vertical" android:padding="8dp" android:layout_marginHorizontal="4dp">
+    <CheckBox android:id="@+id/export_check" android:layout_width="wrap_content"
+        android:layout_height="48dp" android:layout_marginEnd="8dp"
+        android:contentDescription="내보낼 영상 선택" android:visibility="gone" />
+    <ImageView android:id="@+id/thumbnail" android:layout_width="match_parent" android:layout_height="140dp"
+        android:background="@color/divider" android:contentDescription="영상 썸네일" android:scaleType="centerCrop" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="8dp" android:orientation="vertical">
+        <TextView android:id="@+id/title" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:ellipsize="end" android:lines="2" android:textColor="@color/text_primary"
+            android:textSize="16sp" android:textStyle="bold" />
+        <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:lines="2" android:ellipsize="end" android:textColor="@color/green_dark" android:textSize="12sp" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="5dp" android:orientation="horizontal">
+            <Button android:id="@+id/play" android:layout_width="0dp" android:layout_height="48dp" android:minWidth="0dp" android:paddingHorizontal="2dp"
+                android:layout_weight="1" android:text="재생" android:textAllCaps="false" />
+            <Button android:id="@+id/delete" android:layout_width="0dp" android:layout_height="48dp" android:minWidth="0dp" android:paddingHorizontal="2dp"
+                android:layout_marginStart="6dp" android:layout_weight="1" android:text="삭제"
+                android:textAllCaps="false" android:textColor="#C62828" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

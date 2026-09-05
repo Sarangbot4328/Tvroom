@@ -82,7 +82,7 @@ public final class MainActivity extends AppCompatActivity {
         tvroomView = new TVRoomChannelView(this);
         downloadsView = new DownloadChannelView(this);
         settingsView = new SettingsChannelView(this);
-        tvroomButton.setOnClickListener(v -> { showTvroom(); tvroomView.goHome(); });
+        tvroomButton.setOnClickListener(v -> showTvroom());
         downloadsButton.setOnClickListener(v -> showDownloads());
         settingsButton.setOnClickListener(v -> showSettings());
         showTvroom();
@@ -140,8 +140,8 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void updateDownloadScreenAwake() {
-        if (VideoDownloadService.isRunning()) {
+    public void updateDownloadScreenAwake() {
+        if (VideoDownloadService.isRunning() || (tvroomView != null && tvroomView.isBulkDownloading())) {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         } else {
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);

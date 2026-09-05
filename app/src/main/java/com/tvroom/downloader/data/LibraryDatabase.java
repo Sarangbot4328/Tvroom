@@ -96,6 +96,25 @@ public final class LibraryDatabase extends SQLiteOpenHelper {
         }
     }
 
+    public boolean hasDownload(String pageUrl) {
+        String wanted = episodeKey(pageUrl);
+        for (VideoItem item : list()) {
+            if (!wanted.equals(episodeKey(item.pageUrl))) continue;
+            if ("queued".equals(item.status) || "downloading".equals(item.status)) return true;
+            if ("complete".equals(item.status) && item.filePath != null
+                    && new File(item.filePath).isFile()) return true;
+        }
+        return false;
+    }
+
+    private static String episodeKey(String url) {
+        android.net.Uri uri = android.net.Uri.parse(url);
+        String host = uri.getHost();
+        if (host != null && host.matches("(?i)(www\\.)?tvroom[0-9]+\\.org")) host = "tvroom";
+        String path = uri.getPath();
+        return host + (path == null ? "" : path.replaceAll("/+$", ""));
+    }
+
     public void delete(String id) {
         VideoItem item = getItem(id);
         if (item != null) {

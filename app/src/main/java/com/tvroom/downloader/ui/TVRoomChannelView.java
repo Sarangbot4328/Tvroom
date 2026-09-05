@@ -62,6 +62,9 @@ public final class TVRoomChannelView extends FrameLayout {
     private final Button downloadButton;
     private final Button moveButton;
     private final Button stopButton;
+    private final Button allButton;
+    private final boolean resolver;
+    private BulkDownloadController bulk;
     private final CaptureState capture = new CaptureState();
     private boolean receiverRegistered;
     private boolean webViewUsable = true;
@@ -75,12 +78,19 @@ public final class TVRoomChannelView extends FrameLayout {
     };
 
     public TVRoomChannelView(MainActivity activity) {
+        this(activity, false);
+    }
+
+    TVRoomChannelView(MainActivity activity, boolean resolver) {
         super(activity);
+        this.resolver = resolver;
         this.activity = activity;
         homeUrl = AppSettings.getSiteUrl(activity);
         allowedHost = Uri.parse(homeUrl).getHost();
         webView = new WebView(activity);
-        addView(webView, new LayoutParams(-1, -1));
+        LayoutParams webParams = new LayoutParams(-1, -1);
+        if (!resolver) webParams.bottomMargin = dp(116);
+        addView(webView, webParams);
 
         errorView = new TextView(activity);
         errorView.setBackgroundColor(ContextCompat.getColor(activity, R.color.background));
@@ -97,30 +107,37 @@ public final class TVRoomChannelView extends FrameLayout {
         addView(progress, progressParams);
 
         LinearLayout actions = new LinearLayout(activity);
-        actions.setGravity(Gravity.CENTER_VERTICAL);
-        stopButton = button("중단", Color.rgb(198, 40, 40), 76);
-        moveButton = button("이동", Color.rgb(69, 90, 100), 76);
-        downloadButton = button("먼저 영상 재생", ContextCompat.getColor(activity, R.color.green), 132);
-        actions.addView(stopButton);
-        actions.addView(moveButton);
-        actions.addView(downloadButton);
-        for (int i = 1; i < actions.getChildCount(); i++) {
-            LinearLayout.LayoutParams params =
-                    (LinearLayout.LayoutParams) actions.getChildAt(i).getLayoutParams();
-            params.setMarginStart(dp(6));
-            actions.getChildAt(i).setLayoutParams(params);
-        }
-        actions.setElevation(dp(8));
-        LayoutParams actionParams = new LayoutParams(-2, dp(52));
-        actionParams.gravity = Gravity.END | Gravity.BOTTOM;
-        actionParams.setMargins(dp(16), dp(16), dp(16), dp(20));
+        actions.setOrientation(LinearLayout.VERTICAL);
+        actions.setPadding(dp(8), dp(4), dp(8), dp(4));
+        actions.setBackgroundColor(ContextCompat.getColor(activity, R.color.surface));
+        LinearLayout downloads = new LinearLayout(activity);
+        LinearLayout navigation = new LinearLayout(activity);
+        stopButton = button("전체 중단", Color.rgb(198, 40, 40), 0);
+        moveButton = button("페이지 이동", Color.rgb(69, 90, 100), 0);
+        downloadButton = button("먼저 영상 재생", ContextCompat.getColor(activity, R.color.green), 0);
+        allButton = button("전체 다운로드", ContextCompat.getColor(activity, R.color.green_dark), 0);
+        downloads.addView(downloadButton);
+        downloads.addView(allButton);
+        navigation.addView(moveButton);
+        navigation.addView(stopButton);
+        actions.addView(downloads);
+        actions.addView(navigation);
+        LayoutParams actionParams = new LayoutParams(-1, dp(116));
+        actionParams.gravity = Gravity.BOTTOM;
         addView(actions, actionParams);
+        if (resolver) actions.setVisibility(GONE);
+        else bulk = new BulkDownloadController(activity, this);
 
         configureWebView();
         moveButton.setOnClickListener(v -> showNavigation());
         downloadButton.setOnClickListener(v -> confirmDownload());
-        stopButton.setOnClickListener(v -> VideoDownloadService.stop(activity));
-        webView.loadUrl(homeUrl);
+        allButton.setOnClickListener(v -> bulk.choose(webView));
+        stopButton.setOnClickListener(v -> {
+            if (bulk != null) bulk.cancel();
+            if (VideoDownloadService.isRunning()) VideoDownloadService.stop(activity);
+            updateButtons();
+        });
+        if (!resolver) webView.loadUrl(homeUrl);
         updateButtons();
     }
 
@@ -131,7 +148,7 @@ public final class TVRoomChannelView extends FrameLayout {
         button.setTextSize(14);
         button.setAllCaps(false);
         button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(color));
-        button.setLayoutParams(new LinearLayout.LayoutParams(dp(width), dp(52)));
+        button.setLayoutParams(new LinearLayout.LayoutParams(0, dp(52), 1f));
         return button;
     }
 
@@ -292,7 +309,8 @@ public final class TVRoomChannelView extends FrameLayout {
             byte[] buffer = new byte[8192];
             int read;
             while ((read = in.read(buffer)) >= 0) out.write(buffer, 0, read);
-            return out.toString(java.nio.charset.StandardCharsets.UTF_8.name());
+            return out.toString(java.nio.charset.StandardCharsets.UTF_8.name())
+                    + (resolver ? "\nsetInterval(function(){document.querySelectorAll(\"video\").forEach(function(v){v.muted=true;v.play().catch(function(){});});},1000);" : "");
         } catch (Exception ignored) {
             return "";
         }
@@ -322,7 +340,8 @@ public final class TVRoomChannelView extends FrameLayout {
         boolean videoPage = webViewUsable && isVideoPage(webView.getUrl());
         boolean running = VideoDownloadService.isRunning();
         boolean ready = capture.ready();
-        stopButton.setVisibility(running ? VISIBLE : GONE);
+        stopButton.setVisibility(running || (bulk != null && bulk.isActive()) ? VISIBLE : GONE);
+        allButton.setEnabled(webViewUsable && (bulk == null || !bulk.isActive()));
         downloadButton.setVisibility(videoPage ? VISIBLE : GONE);
         downloadButton.setEnabled(videoPage && ready);
         downloadButton.setText(!ready ? "먼저 영상 재생" : running ? "대기열 추가" : "다운로드");
@@ -348,15 +367,18 @@ public final class TVRoomChannelView extends FrameLayout {
                         (queueing ? " 영상을 대기열에 추가할까요?" : " 영상을 다운로드할까요?"))
                 .setNegativeButton("취소", null)
                 .setPositiveButton(queueing ? "추가" : "시작", (dialog, which) -> {
-                    boolean accepted = VideoDownloadService.start(activity, snapshot);
+                    boolean accepted;
+                    try { accepted = VideoDownloadService.start(activity, snapshot); }
+                    catch (Exception error) {
+                        Toast.makeText(activity, "다운로드를 시작하지 못했습니다. 다시 시도해 주세요.", Toast.LENGTH_LONG).show();
+                        return;
+                    }
                     if (!accepted) {
-                        Toast.makeText(activity, "이미 다운로드 중이거나 대기열에 있는 영상입니다.",
+                        Toast.makeText(activity, "이미 저장되어 있거나 다운로드 대기열에 있는 영상입니다.",
                                 Toast.LENGTH_LONG).show();
-                    } else if (queueing) {
+                    } else {
                         Toast.makeText(activity, "다운로드 대기열에 추가했습니다.",
                                 Toast.LENGTH_SHORT).show();
-                    } else {
-                        activity.showDownloads();
                     }
                     updateButtons();
                 })
@@ -393,7 +415,7 @@ public final class TVRoomChannelView extends FrameLayout {
     public void goBack() { if (webViewUsable) webView.goBack(); }
 
     private void showFullscreen(View view, WebChromeClient.CustomViewCallback callback) {
-        if (fullscreenView != null) {
+        if (resolver || fullscreenView != null) {
             callback.onCustomViewHidden();
             return;
         }
@@ -457,6 +479,7 @@ public final class TVRoomChannelView extends FrameLayout {
     }
 
     public void destroy() {
+        if (bulk != null) bulk.cancel();
         exitFullscreen();
         setWebVideoPlaying(false);
         if (!webViewUsable) return;
@@ -512,6 +535,19 @@ public final class TVRoomChannelView extends FrameLayout {
             receiverRegistered = false;
         }
         super.onDetachedFromWindow();
+    }
+
+    public boolean isBulkDownloading() { return bulk != null && bulk.isActive(); }
+    void loadEpisode(String url) { webView.loadUrl(url); }
+    CaptureState.Snapshot resolvedSnapshot() {
+        if (!webViewUsable || !capture.ready()) return null;
+        syncSession();
+        return capture.snapshot();
+    }
+    void bulkState(String text) {
+        allButton.setText(text);
+        updateButtons();
+        activity.updateDownloadScreenAwake();
     }
 
     private int dp(int value) {

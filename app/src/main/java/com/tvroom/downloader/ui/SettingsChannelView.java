@@ -31,6 +31,17 @@ public final class SettingsChannelView extends android.widget.FrameLayout {
         url = findViewById(R.id.tvroom_url); cleanup = findViewById(R.id.cleanup_temp_files);
         cleanupStatus = findViewById(R.id.cleanup_temp_status); version = findViewById(R.id.app_version);
         findViewById(R.id.save_tvroom_url).setOnClickListener(v -> saveAddress());
+        Button layout = findViewById(R.id.download_layout);
+        String[] modes = {"기본 모드 · 한 줄에 1개", "태블릿 모드 · 한 줄에 2개", "태블릿 모드 · 한 줄에 3개"};
+        layout.setText(modes[AppSettings.getDownloadColumns(activity) - 1]);
+        layout.setOnClickListener(v -> new AlertDialog.Builder(activity)
+                .setTitle("다운로드 화면 배열")
+                .setSingleChoiceItems(modes, AppSettings.getDownloadColumns(activity) - 1, (dialog, which) -> {
+                    AppSettings.setDownloadColumns(activity, which + 1);
+                    layout.setText(modes[which]);
+                    activity.refreshDownloads();
+                    dialog.dismiss();
+                }).setNegativeButton("닫기", null).show());
         cleanup.setOnClickListener(v -> confirmCleanup()); refresh();
     }
 
@@ -38,7 +49,7 @@ public final class SettingsChannelView extends android.widget.FrameLayout {
         url.setText(AppSettings.getSiteUrl(activity));
         cleanup.setEnabled(!cleaning && !VideoDownloadService.isRunning());
         try { version.setText("버전 " + activity.getPackageManager().getPackageInfo(activity.getPackageName(), 0).versionName); }
-        catch (Exception ignored) { version.setText("버전 1.1.19"); }
+        catch (Exception ignored) { version.setText("버전 1.1.21"); }
     }
 
     private void saveAddress() {

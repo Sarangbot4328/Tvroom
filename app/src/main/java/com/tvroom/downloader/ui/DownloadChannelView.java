@@ -19,6 +19,8 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.GridLayoutManager;
+import com.tvroom.downloader.storage.AppSettings;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
@@ -49,6 +51,8 @@ public final class DownloadChannelView extends android.widget.FrameLayout {
     private final Set<String> selectedIds = new LinkedHashSet<>();
     private boolean exportSelection;
     private boolean receiverRegistered;
+    private RecyclerView list;
+    private int columns;
 
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -68,7 +72,7 @@ public final class DownloadChannelView extends android.widget.FrameLayout {
     public DownloadChannelView(MainActivity activity) {
         super(activity); this.activity = activity;
         LayoutInflater.from(activity).inflate(R.layout.channel_downloads, this, true);
-        RecyclerView list = findViewById(R.id.video_list);
+        list = findViewById(R.id.video_list);
         empty = findViewById(R.id.empty); status = findViewById(R.id.download_status);
         exportButton = findViewById(R.id.export);
         refreshButton = findViewById(R.id.refresh);
@@ -84,6 +88,12 @@ public final class DownloadChannelView extends android.widget.FrameLayout {
     }
 
     public void refresh() {
+        int preferredColumns = AppSettings.getDownloadColumns(activity);
+        if (columns != preferredColumns) {
+            columns = preferredColumns;
+            list.setLayoutManager(new GridLayoutManager(activity, columns));
+            adapter.notifyDataSetChanged();
+        }
         swipe.setRefreshing(true);
         executor.execute(() -> {
             List<VideoItem> rows = LibraryDatabase.get(activity).list();
@@ -179,8 +189,10 @@ public final class DownloadChannelView extends android.widget.FrameLayout {
     private final class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.Holder> {
         private final List<VideoItem> items = new ArrayList<>();
         void setItems(List<VideoItem> value) { items.clear(); items.addAll(value); notifyDataSetChanged(); }
+        @Override public int getItemViewType(int position) { return columns > 1 ? 1 : 0; }
         @NonNull @Override public Holder onCreateViewHolder(@NonNull ViewGroup parent, int type) {
-            return new Holder(LayoutInflater.from(parent.getContext()).inflate(R.layout.row_video, parent, false));
+            return new Holder(LayoutInflater.from(parent.getContext()).inflate(
+                    type == 1 ? R.layout.card_video : R.layout.row_video, parent, false));
         }
         @Override public void onBindViewHolder(@NonNull Holder holder, int position) {
             VideoItem item = items.get(position);
