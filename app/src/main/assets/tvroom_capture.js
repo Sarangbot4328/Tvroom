@@ -32,6 +32,7 @@
   function rememberUrl(value) {
     try {
       var url = typeof value === 'string' ? value : value && value.url;
+      if (url) url = new URL(url, location.href).href;
       if (url && /^https?:/i.test(url) && /(m3u8|segment_list|\.ts(?:[?#]|$)|\.m4s(?:[?#]|$)|\.key(?:[?#]|$)|\/key(?:[/?#]|$))/i.test(url)) {
         var referer = '';
         try { if (/^https?:/i.test(location.href)) referer = location.href; } catch (_) {}
@@ -118,6 +119,9 @@
       performance.getEntriesByType('resource').forEach(function (entry) { rememberUrl(entry.name); });
       document.querySelectorAll('video,source,iframe').forEach(function (node) {
         rememberUrl(node.currentSrc || node.src);
+      });
+      document.querySelectorAll('[data-m3u8]').forEach(function (node) {
+        rememberUrl(node.getAttribute('data-m3u8'));
       });
       reportPlaybackState();
       if (window.top === window) {

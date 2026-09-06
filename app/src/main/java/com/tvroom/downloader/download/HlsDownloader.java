@@ -114,7 +114,8 @@ final class HlsDownloader {
     private DownloadedSegments downloadPlaylist(Playlist playlist, File segmentDir) throws Exception {
         String custom = firstSegmentList(playlist.segments);
         byte[] capturedKey = job.keyHex.isEmpty() ? null : hex(job.keyHex);
-        byte[] key = capturedKey;
+        // Standard HLS must use its declared key, not an unrelated captured WebCrypto key.
+        byte[] key = custom != null ? capturedKey : null;
         if (key == null && playlist.encrypted && playlist.keyUrl != null) {
             key = normalizeKey(fetch(playlist.keyUrl, job.pageUrl, false));
         }
@@ -621,10 +622,7 @@ final class HlsDownloader {
     }
 
     private static byte[] normalizeKey(byte[] value) {
-        if (value.length == 16) return value;
-        String text = new String(value, StandardCharsets.US_ASCII).trim().replaceFirst("^0x", "");
-        if (text.matches("(?i)[0-9a-f]{32,}")) return Arrays.copyOf(hex(text), 16);
-        return Arrays.copyOf(value, 16);
+        return HlsKeyDecoder.decode(value);
     }
 
     private static byte[] decryptBest(byte[] encrypted, byte[] key, byte[] configuredIv,

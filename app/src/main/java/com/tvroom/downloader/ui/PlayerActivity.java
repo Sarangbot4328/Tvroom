@@ -51,6 +51,7 @@ public final class PlayerActivity extends AppCompatActivity {
     private View lockTouchGuard;
     private String mediaPath;
     private boolean immersive;
+    private int previousOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
     private boolean inPictureInPicture;
     private boolean pictureInPictureSession;
     private boolean controlsLocked;
@@ -111,6 +112,7 @@ public final class PlayerActivity extends AppCompatActivity {
                     showLockedActions();
                     return;
                 }
+                if (immersive) { setFullscreen(false); return; }
                 stopPlaybackAndFinish();
             }
         });
@@ -283,11 +285,13 @@ public final class PlayerActivity extends AppCompatActivity {
 
     private void setFullscreen(boolean enabled) {
         if (!enabled && controlsLocked) setControlsLocked(false);
+        if (enabled && !immersive) previousOrientation = getRequestedOrientation();
         immersive = enabled;
+        playerView.setFullscreenButtonState(enabled);
         updateLockAvailability();
         setRequestedOrientation(enabled
                 ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+                : previousOrientation);
         if (Build.VERSION.SDK_INT >= 30) {
             WindowInsetsController controller = getWindow().getInsetsController();
             if (controller != null) {

@@ -17,8 +17,8 @@ android {
         applicationId = "com.tvroom.downloader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 30
-        versionName = "1.1.21"
+        versionCode = 31
+        versionName = "1.1.22"
         buildConfigField("String", "TELEGRAM_BOT_TOKEN", "\"$telegramBotToken\"")
         buildConfigField("String", "TELEGRAM_ADMIN_CHAT_ID", "\"$telegramAdminChatId\"")
     }
@@ -57,6 +57,8 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity:1.10.1")
     implementation("androidx.core:core:1.16.0")

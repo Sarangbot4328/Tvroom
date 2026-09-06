@@ -99,6 +99,9 @@ public final class CaptureState {
     }
 
     public synchronized boolean ready() {
+        // A standard HLS manifest supplies segment URLs and its own AES key URI.
+        // Segment suffixes are arbitrary (the site also serves index0.aaa).
+        if (!m3u8.isEmpty()) return true;
         if (streamReferers.isEmpty() || segments.isEmpty()) return false;
         boolean customSegments = false;
         for (String value : segments) {
@@ -107,8 +110,7 @@ public final class CaptureState {
                 break;
             }
         }
-        if (customSegments && keyHex.isEmpty()) return false;
-        return !m3u8.isEmpty() || customSegments;
+        return customSegments && !keyHex.isEmpty();
     }
 
     public synchronized List<String> knownUrls() {
