@@ -28,6 +28,7 @@ import com.tvroom.downloader.MainActivity;
 import com.tvroom.downloader.R;
 import com.tvroom.downloader.data.LibraryDatabase;
 import com.tvroom.downloader.data.VideoItem;
+import com.tvroom.downloader.data.PlaylistStore;
 import com.tvroom.downloader.download.VideoDownloadService;
 import com.tvroom.downloader.export.VideoExportService;
 
@@ -53,6 +54,9 @@ public final class DownloadChannelView extends android.widget.FrameLayout {
     private boolean receiverRegistered;
     private RecyclerView list;
     private int columns;
+    private final PlaylistChannelView playlists;
+    private final PlaylistStore playlistStore;
+    private boolean playlistMode;
 
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -77,6 +81,9 @@ public final class DownloadChannelView extends android.widget.FrameLayout {
         exportButton = findViewById(R.id.export);
         refreshButton = findViewById(R.id.refresh);
         swipe = findViewById(R.id.swipe);
+        playlistStore = new PlaylistStore(activity);
+        playlists = new PlaylistChannelView(activity);
+        ((android.widget.FrameLayout) findViewById(R.id.playlist_panel)).addView(playlists);
         list.setLayoutManager(new LinearLayoutManager(activity)); list.setAdapter(adapter);
         exportButton.setOnClickListener(v -> {
             if (exportSelection) chooseExportFolder(); else beginExportSelection();
@@ -84,10 +91,24 @@ public final class DownloadChannelView extends android.widget.FrameLayout {
         refreshButton.setOnClickListener(v -> {
             if (!cancelExportSelection()) refresh();
         });
-        swipe.setOnRefreshListener(this::refresh); refresh();
+        findViewById(R.id.playlist_switch).setOnClickListener(v -> setPlaylistMode(!playlistMode));
+        swipe.setOnRefreshListener(this::refresh); setPlaylistMode(playlistStore.isPlaylistMode());
+    }
+
+    private void setPlaylistMode(boolean enabled) {
+        cancelExportSelection();
+        playlistMode = enabled; playlistStore.setPlaylistMode(enabled);
+        swipe.setVisibility(enabled ? GONE : VISIBLE);
+        findViewById(R.id.playlist_panel).setVisibility(enabled ? VISIBLE : GONE);
+        ((TextView) findViewById(R.id.download_heading)).setText(enabled ? "재생목록" : "다운로드");
+        ((Button) findViewById(R.id.playlist_switch)).setText(enabled ? "다운로드 보기" : "재생목록 보기");
+        exportButton.setVisibility(enabled ? GONE : VISIBLE);
+        status.setText(enabled ? "자동 회차 묶음과 나만의 재생목록" : "저장한 영상을 오프라인으로 볼 수 있습니다");
+        refresh();
     }
 
     public void refresh() {
+        if (playlistMode) { playlists.refresh(); return; }
         int preferredColumns = AppSettings.getDownloadColumns(activity);
         if (columns != preferredColumns) {
             columns = preferredColumns;

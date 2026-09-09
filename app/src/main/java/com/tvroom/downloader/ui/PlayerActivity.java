@@ -22,6 +22,7 @@ import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
@@ -29,18 +30,30 @@ import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.source.MediaSource;
+import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import androidx.media3.exoplayer.hls.DefaultHlsExtractorFactory;
 import androidx.media3.exoplayer.hls.HlsMediaSource;
 import androidx.media3.ui.PlayerView;
 
 import com.tvroom.downloader.R;
+import com.tvroom.downloader.data.LibraryDatabase;
+import com.tvroom.downloader.data.PlaylistStore;
+import com.tvroom.downloader.data.VideoItem;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
 
 @UnstableApi
 public final class PlayerActivity extends AppCompatActivity {
     public static final String EXTRA_PATH = "path";
     public static final String EXTRA_TITLE = "title";
+    public static final String EXTRA_VIDEO_IDS = "playlist_video_ids";
+    public static final String EXTRA_START_ID = "playlist_start_id";
     private static final String POSITION_PREFS = "video_playback_positions";
     private static final long FINISHED_MARGIN_MS = 10_000L;
 
@@ -119,6 +132,7 @@ public final class PlayerActivity extends AppCompatActivity {
         updateLockAvailability();
 
         String path = getIntent().getStringExtra(EXTRA_PATH);
+        if (state != null && state.getString("playlist_current") != null) path = state.getString("playlist_current");
         if (path == null || !new File(path).isFile()) {
             Toast.makeText(this, "영상 파일을 찾을 수 없습니다.", Toast.LENGTH_LONG).show();
             finish();
@@ -127,8 +141,41 @@ public final class PlayerActivity extends AppCompatActivity {
         mediaPath = new File(path).getAbsolutePath();
 
         setTitle(getIntent().getStringExtra(EXTRA_TITLE));
+        List<MediaSource> sources = new ArrayList<>();
+        int startIndex = 0;
+        ArrayList<String> ids = getIntent().getStringArrayListExtra(EXTRA_VIDEO_IDS);
+        if (ids != null && !ids.isEmpty()) {
+            Map<String, VideoItem> byId = new LinkedHashMap<>();
+            for (VideoItem video : LibraryDatabase.get(this).list()) byId.put(video.id, video);
+            for (String id : new LinkedHashSet<>(ids)) {
+                VideoItem video = byId.get(id);
+                if (video == null || !PlaylistStore.playable(video)) continue;
+                if (new File(video.filePath).getAbsolutePath().equals(mediaPath)) startIndex = sources.size();
+                sources.add(mediaSource(video.filePath, video.title));
+            }
+        }
+        if (sources.isEmpty()) sources.add(mediaSource(path, getIntent().getStringExtra(EXTRA_TITLE)));
         player = new ExoPlayer.Builder(this).build();
         player.addListener(new Player.Listener() {
+            @Override public void onMediaItemTransition(MediaItem item, int reason) {
+                if (item != null) {
+                    mediaPath = item.mediaId;
+                    setTitle(item.mediaMetadata.title);
+                }
+            }
+
+            @Override public void onPositionDiscontinuity(Player.PositionInfo oldPosition,
+                    Player.PositionInfo newPosition, int reason) {
+                if (oldPosition.mediaItem == null || newPosition.mediaItem == null
+                        || oldPosition.mediaItem.mediaId.equals(newPosition.mediaItem.mediaId)) return;
+                String previous = oldPosition.mediaItem.mediaId;
+                if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION || oldPosition.positionMs < 1000L) {
+                    clearSavedPosition(PlayerActivity.this, previous);
+                } else {
+                    getSharedPreferences(POSITION_PREFS, MODE_PRIVATE).edit()
+                            .putLong(previous, oldPosition.positionMs).apply();
+                }
+            }
             @Override public void onPlayerError(PlaybackException error) {
                 setKeepScreenOn(false);
                 String detail = error.getMessage();
@@ -153,8 +200,21 @@ public final class PlayerActivity extends AppCompatActivity {
         playerView.setControllerVisibilityListener(
                 (PlayerView.ControllerVisibilityListener) visibility ->
                         setActionIconsVisible(visibility == View.VISIBLE));
+        playerView.setShowNextButton(sources.size() > 1);
+        playerView.setShowPreviousButton(sources.size() > 1);
+        long savedPosition = state != null ? state.getLong("playlist_position", 0L)
+                : getSharedPreferences(POSITION_PREFS, MODE_PRIVATE).getLong(mediaPath, 0L);
+        player.setMediaSources(sources, startIndex, savedPosition);
+        player.setRepeatMode(Player.REPEAT_MODE_OFF);
+        player.prepare();
+        if (state == null || state.getBoolean("playlist_playing", true)) player.play();
+    }
+
+    private MediaSource mediaSource(String path, String title) {
         boolean offlineHls = path.toLowerCase(java.util.Locale.US).endsWith(".m3u8");
-        MediaItem.Builder item = new MediaItem.Builder().setUri(Uri.fromFile(new File(path)));
+        MediaItem.Builder item = new MediaItem.Builder().setUri(Uri.fromFile(new File(path)))
+                .setMediaId(new File(path).getAbsolutePath())
+                .setMediaMetadata(new MediaMetadata.Builder().setTitle(title).build());
         if (offlineHls) item.setMimeType(MimeTypes.APPLICATION_M3U8);
         MediaItem mediaItem = item.build();
         if (offlineHls) {
@@ -162,16 +222,20 @@ public final class PlayerActivity extends AppCompatActivity {
                     | DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES;
             DefaultHlsExtractorFactory extractorFactory =
                     new DefaultHlsExtractorFactory(tsFlags, true);
-            player.setMediaSource(new HlsMediaSource.Factory(new DefaultDataSource.Factory(this))
-                    .setExtractorFactory(extractorFactory).createMediaSource(mediaItem));
+            return new HlsMediaSource.Factory(new DefaultDataSource.Factory(this))
+                    .setExtractorFactory(extractorFactory).createMediaSource(mediaItem);
         } else {
-            player.setMediaItem(mediaItem);
+            return new ProgressiveMediaSource.Factory(new DefaultDataSource.Factory(this)).createMediaSource(mediaItem);
         }
-        long savedPosition = getSharedPreferences(POSITION_PREFS, MODE_PRIVATE)
-                .getLong(mediaPath, 0L);
-        if (savedPosition > 0L) player.seekTo(savedPosition);
-        player.prepare();
-        player.play();
+    }
+
+    @Override protected void onSaveInstanceState(@NonNull Bundle state) {
+        if (player != null) {
+            state.putString("playlist_current", mediaPath);
+            state.putLong("playlist_position", player.getCurrentPosition());
+            state.putBoolean("playlist_playing", player.getPlayWhenReady());
+        }
+        super.onSaveInstanceState(state);
     }
 
     private void updateKeepScreenOn() {
