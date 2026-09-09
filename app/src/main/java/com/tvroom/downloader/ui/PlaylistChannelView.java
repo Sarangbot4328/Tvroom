@@ -2,6 +2,9 @@ package com.tvroom.downloader.ui;
 
 import android.content.Intent;
 import android.view.View;
+import android.view.LayoutInflater;
+import android.widget.ImageView;
+import java.io.File;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
@@ -109,20 +112,36 @@ public final class PlaylistChannelView extends LinearLayout {
     }
 
     private void showEpisodes(VideoPlaylist playlist) {
-        String[] titles = new String[playlist.videos.size()];
-        for (int i = 0; i < titles.length; i++) titles[i] = (i + 1) + ". " + playlist.videos.get(i).title;
-        new AlertDialog.Builder(activity).setTitle(playlist.label())
-                .setItems(titles, (d, which) -> {
-                    VideoItem selected = playlist.videos.get(which);
-                    if (!PlaylistStore.playable(selected)) { Toast.makeText(activity, "영상 파일을 찾을 수 없습니다.", Toast.LENGTH_LONG).show(); refresh(); return; }
-                    ArrayList<String> ids = new ArrayList<>();
-                    for (VideoItem video : playlist.videos) ids.add(video.id);
-                    activity.startActivity(new Intent(activity, PlayerActivity.class)
-                            .putStringArrayListExtra(PlayerActivity.EXTRA_VIDEO_IDS, ids)
-                            .putExtra(PlayerActivity.EXTRA_START_ID, selected.id)
-                            .putExtra(PlayerActivity.EXTRA_PATH, selected.filePath)
-                            .putExtra(PlayerActivity.EXTRA_TITLE, selected.title));
-                }).setNeutralButton("목록 관리", (d, w) -> manage(playlist)).setNegativeButton("닫기", null).show();
+        LinearLayout content = new LinearLayout(activity); content.setOrientation(VERTICAL);
+        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(playlist.label()).setView(content)
+                .setNeutralButton("목록 관리", (d, w) -> manage(playlist)).setNegativeButton("닫기", null).create();
+        if (playlist.videos.isEmpty()) {
+            TextView empty = new TextView(activity); empty.setText("재생 가능한 영상이 없습니다. 목록 관리에서 영상을 추가해 주세요.");
+            empty.setPadding(dp(20), dp(16), dp(20), dp(16)); content.addView(empty);
+        } else {
+            RecyclerView episodes = new RecyclerView(activity);
+            episodes.setLayoutManager(new LinearLayoutManager(activity));
+            episodes.setAdapter(new EpisodeAdapter(playlist, dialog));
+            content.addView(episodes, new LayoutParams(LayoutParams.MATCH_PARENT,
+                    Math.min(dp(440), getResources().getDisplayMetrics().heightPixels / 2)));
+            dialog.setOnDismissListener(d -> episodes.setAdapter(null));
+        }
+        dialog.show();
+    }
+
+    private void playEpisode(VideoPlaylist playlist, int index, AlertDialog dialog) {
+        VideoItem selected = playlist.videos.get(index);
+        if (!PlaylistStore.playable(selected)) {
+            Toast.makeText(activity, "영상 파일을 찾을 수 없습니다.", Toast.LENGTH_LONG).show(); refresh(); return;
+        }
+        ArrayList<String> ids = new ArrayList<>();
+        for (VideoItem video : playlist.videos) ids.add(video.id);
+        dialog.dismiss();
+        activity.startActivity(new Intent(activity, PlayerActivity.class)
+                .putStringArrayListExtra(PlayerActivity.EXTRA_VIDEO_IDS, ids)
+                .putExtra(PlayerActivity.EXTRA_START_ID, selected.id)
+                .putExtra(PlayerActivity.EXTRA_PATH, selected.filePath)
+                .putExtra(PlayerActivity.EXTRA_TITLE, selected.title));
     }
 
     private void manage(VideoPlaylist playlist) {
@@ -161,24 +180,53 @@ public final class PlaylistChannelView extends LinearLayout {
                 .setNegativeButton("취소", null).show();
     }
 
-    private final class GroupAdapter extends RecyclerView.Adapter<GroupAdapter.Holder> {
-        @Override public Holder onCreateViewHolder(ViewGroup parent, int type) {
-            LinearLayout row = new LinearLayout(activity); row.setOrientation(VERTICAL); row.setPadding(dp(16), dp(12), dp(16), dp(12));
-            row.setLayoutParams(new RecyclerView.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
-            TextView title = new TextView(activity); title.setTextSize(18); title.setTextColor(activity.getColor(R.color.text_primary)); row.addView(title);
-            TextView detail = new TextView(activity); detail.setTextColor(activity.getColor(R.color.text_secondary)); row.addView(detail);
-            Button open = new Button(activity); open.setText("회차 목록 / 재생"); row.addView(open);
-            return new Holder(row, title, detail, open);
+    private static String cover(VideoPlaylist playlist) {
+        for (VideoItem video : playlist.videos) {
+            if (video.thumbnailPath != null && new File(video.thumbnailPath).isFile()) return video.thumbnailPath;
         }
-        @Override public void onBindViewHolder(Holder holder, int position) {
+        return null;
+    }
+
+    private final class RowHolder extends RecyclerView.ViewHolder {
+        final TextView title, detail, action;
+        final ImageView thumbnail;
+        RowHolder(View view) {
+            super(view); title = view.findViewById(R.id.playlist_title);
+            detail = view.findViewById(R.id.playlist_detail); action = view.findViewById(R.id.playlist_action);
+            thumbnail = view.findViewById(R.id.playlist_thumbnail);
+        }
+    }
+
+    private RowHolder createRow(ViewGroup parent) {
+        return new RowHolder(LayoutInflater.from(activity).inflate(R.layout.row_playlist, parent, false));
+    }
+
+    private final class GroupAdapter extends RecyclerView.Adapter<RowHolder> {
+        @Override public RowHolder onCreateViewHolder(ViewGroup parent, int type) { return createRow(parent); }
+        @Override public void onBindViewHolder(RowHolder holder, int position) {
             VideoPlaylist playlist = groups.get(position); holder.title.setText(playlist.label());
-            holder.detail.setText((playlist.automatic ? "자동 재생목록" : "수동 재생목록") + " · 재생 가능 " + playlist.videos.size() + "개");
-            holder.open.setOnClickListener(v -> showEpisodes(playlist)); holder.itemView.setOnClickListener(v -> showEpisodes(playlist));
+            holder.detail.setText((playlist.automatic ? "자동 재생목록" : "수동 재생목록") + " · " + playlist.videos.size() + "개 영상");
+            holder.action.setText("회차 선택  ›");
+            PlaylistThumbnails.bind(holder.thumbnail, cover(playlist));
+            holder.itemView.setOnClickListener(v -> showEpisodes(playlist));
         }
+        @Override public void onViewRecycled(RowHolder holder) { PlaylistThumbnails.clear(holder.thumbnail); }
         @Override public int getItemCount() { return groups.size(); }
-        final class Holder extends RecyclerView.ViewHolder {
-            final TextView title, detail; final Button open;
-            Holder(View view, TextView title, TextView detail, Button open) { super(view); this.title = title; this.detail = detail; this.open = open; }
+    }
+
+    private final class EpisodeAdapter extends RecyclerView.Adapter<RowHolder> {
+        private final VideoPlaylist playlist;
+        private final AlertDialog dialog;
+        EpisodeAdapter(VideoPlaylist playlist, AlertDialog dialog) { this.playlist = playlist; this.dialog = dialog; }
+        @Override public RowHolder onCreateViewHolder(ViewGroup parent, int type) { return createRow(parent); }
+        @Override public void onBindViewHolder(RowHolder holder, int position) {
+            VideoItem video = playlist.videos.get(position);
+            holder.title.setText(video.title); holder.detail.setText((position + 1) + " / " + playlist.videos.size());
+            holder.action.setText("이 영상부터 재생  ›");
+            PlaylistThumbnails.bind(holder.thumbnail, video.thumbnailPath);
+            holder.itemView.setOnClickListener(v -> playEpisode(playlist, position, dialog));
         }
+        @Override public void onViewRecycled(RowHolder holder) { PlaylistThumbnails.clear(holder.thumbnail); }
+        @Override public int getItemCount() { return playlist.videos.size(); }
     }
 }
