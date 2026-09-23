@@ -29,6 +29,7 @@ import com.tvroom.downloader.activation.ActivationStore;
 import com.tvroom.downloader.data.LibraryDatabase;
 import com.tvroom.downloader.download.VideoDownloadService;
 import com.tvroom.downloader.export.VideoExportService;
+import com.tvroom.downloader.storage.AppSettings;
 import com.tvroom.downloader.storage.TempFiles;
 
 public final class MainActivity extends AppCompatActivity {
@@ -47,6 +48,7 @@ public final class MainActivity extends AppCompatActivity {
     };
 
     @Override protected void onCreate(Bundle state) {
+        AppSettings.applyNightMode(this);
         super.onCreate(state);
         if (!ActivationStore.isActivated(this)) {
             startActivity(new Intent(this, ActivationActivity.class));
@@ -74,7 +76,7 @@ public final class MainActivity extends AppCompatActivity {
             LibraryDatabase.get(this).recoverInterruptedDownloads();
         }
         setContentView(R.layout.activity_main);
-        SystemBarInsets.apply(this, findViewById(R.id.main_root), true);
+        SystemBarInsets.apply(this, findViewById(R.id.main_root), !AppSettings.isBlackTheme(this));
         content = findViewById(R.id.content);
         tvroomButton = findViewById(R.id.nav_tvroom);
         downloadsButton = findViewById(R.id.nav_downloads);
@@ -85,7 +87,10 @@ public final class MainActivity extends AppCompatActivity {
         tvroomButton.setOnClickListener(v -> showTvroom());
         downloadsButton.setOnClickListener(v -> showDownloads());
         settingsButton.setOnClickListener(v -> showSettings());
-        showTvroom();
+        int tab = state == null ? 0 : state.getInt("tab", 0);
+        if (tab == 1) showDownloads();
+        else if (tab == 2) showSettings();
+        else showTvroom();
         ContextCompat.registerReceiver(this, downloadStateReceiver,
                 new IntentFilter(VideoDownloadService.ACTION_STATE),
                 ContextCompat.RECEIVER_NOT_EXPORTED);
@@ -126,7 +131,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void tint() {
-        int active = ContextCompat.getColor(this, R.color.green_dark);
+        int active = ContextCompat.getColor(this, R.color.accent_dark);
         int idle = ContextCompat.getColor(this, R.color.text_secondary);
         tvroomButton.setTextColor(selected == 0 ? active : idle);
         downloadsButton.setTextColor(selected == 1 ? active : idle);
@@ -151,6 +156,12 @@ public final class MainActivity extends AppCompatActivity {
     @Override protected void onResume() {
         super.onResume();
         updateDownloadScreenAwake();
+        if (selected == 1 && downloadsView != null) downloadsView.refreshLastWatched();
+    }
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        state.putInt("tab", selected);
     }
 
     @Override protected void onDestroy() {

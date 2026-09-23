@@ -38,6 +38,8 @@ import androidx.media3.ui.PlayerView;
 
 import com.tvroom.downloader.R;
 import com.tvroom.downloader.data.LibraryDatabase;
+import com.tvroom.downloader.storage.AppSettings;
+import com.tvroom.downloader.storage.WatchHistory;
 import com.tvroom.downloader.data.PlaylistStore;
 import com.tvroom.downloader.data.VideoItem;
 
@@ -79,6 +81,7 @@ public final class PlayerActivity extends AppCompatActivity {
     };
 
     @Override protected void onCreate(Bundle state) {
+        AppSettings.applyNightMode(this);
         super.onCreate(state);
         setContentView(R.layout.activity_player);
         playerView = findViewById(R.id.player_view);
@@ -139,6 +142,7 @@ public final class PlayerActivity extends AppCompatActivity {
             return;
         }
         mediaPath = new File(path).getAbsolutePath();
+        WatchHistory.mark(this, mediaPath);
 
         setTitle(getIntent().getStringExtra(EXTRA_TITLE));
         List<MediaSource> sources = new ArrayList<>();
@@ -161,6 +165,7 @@ public final class PlayerActivity extends AppCompatActivity {
                 if (item != null) {
                     mediaPath = item.mediaId;
                     setTitle(item.mediaMetadata.title);
+                    WatchHistory.mark(PlayerActivity.this, mediaPath);
                 }
             }
 
@@ -258,6 +263,7 @@ public final class PlayerActivity extends AppCompatActivity {
 
     private void savePlaybackPosition() {
         if (player == null || mediaPath == null) return;
+        WatchHistory.mark(this, mediaPath);
         long position = Math.max(0L, player.getCurrentPosition());
         long duration = player.getDuration();
         boolean finished = player.getPlaybackState() == Player.STATE_ENDED

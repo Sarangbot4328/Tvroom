@@ -112,10 +112,10 @@ public final class TVRoomChannelView extends FrameLayout {
         actions.setBackgroundColor(ContextCompat.getColor(activity, R.color.surface));
         LinearLayout downloads = new LinearLayout(activity);
         LinearLayout navigation = new LinearLayout(activity);
-        stopButton = button("전체 중단", Color.rgb(198, 40, 40), 0);
-        moveButton = button("페이지 이동", Color.rgb(69, 90, 100), 0);
-        downloadButton = button("먼저 영상 재생", ContextCompat.getColor(activity, R.color.green), 0);
-        allButton = button("전체 다운로드", ContextCompat.getColor(activity, R.color.green_dark), 0);
+        stopButton = button("전체 중단", ContextCompat.getColor(activity, R.color.danger), 0);
+        moveButton = button("페이지 이동", ContextCompat.getColor(activity, R.color.button_muted), 0);
+        downloadButton = button("먼저 영상 재생", ContextCompat.getColor(activity, R.color.accent), 0);
+        allButton = button("전체 다운로드", ContextCompat.getColor(activity, R.color.accent_dark), 0);
         downloads.addView(downloadButton);
         downloads.addView(allButton);
         navigation.addView(moveButton);

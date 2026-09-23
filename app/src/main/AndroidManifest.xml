@@ -8,6 +8,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
+        android:name=".TVRoomApplication"
         android:allowBackup="false"
         android:icon="@drawable/ic_app"
         android:label="티비룸 다운로더"

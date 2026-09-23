@@ -1,6 +1,10 @@
 package com.tvroom.downloader.ui;
 
 import android.content.Intent;
+import android.graphics.Color;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
 import android.view.View;
 import android.view.LayoutInflater;
 import android.widget.ImageView;
@@ -12,6 +16,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AlertDialog;
+import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import com.tvroom.downloader.MainActivity;
@@ -20,6 +25,8 @@ import com.tvroom.downloader.data.LibraryDatabase;
 import com.tvroom.downloader.data.PlaylistStore;
 import com.tvroom.downloader.data.VideoItem;
 import com.tvroom.downloader.data.VideoPlaylist;
+import com.tvroom.downloader.storage.AppSettings;
+import com.tvroom.downloader.storage.WatchHistory;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -43,6 +50,11 @@ public final class PlaylistChannelView extends LinearLayout {
         LinearLayout controls = new LinearLayout(activity);
         Button create = new Button(activity); create.setText("새 재생목록");
         Button restore = new Button(activity); restore.setText("자동 목록 복원");
+        if (AppSettings.isBlackTheme(activity)) {
+            create.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                    ContextCompat.getColor(activity, R.color.accent)));
+            create.setTextColor(Color.WHITE);
+        }
         controls.addView(create, new LayoutParams(0, LayoutParams.WRAP_CONTENT, 1));
         controls.addView(restore, new LayoutParams(0, LayoutParams.WRAP_CONTENT, 1));
         addView(controls);
@@ -76,6 +88,8 @@ public final class PlaylistChannelView extends LinearLayout {
     private interface Named { void accept(String name); }
     private void nameDialog(String title, String initial, Named callback) {
         EditText input = new EditText(activity); input.setSingleLine(); input.setText(initial); input.setHint("재생목록 이름");
+        input.setTextColor(ContextCompat.getColor(activity, R.color.text_primary));
+        input.setHintTextColor(ContextCompat.getColor(activity, R.color.text_secondary));
         AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(title).setView(input)
                 .setNegativeButton("취소", null).setPositiveButton("다음", null).create();
         dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
@@ -115,18 +129,26 @@ public final class PlaylistChannelView extends LinearLayout {
         LinearLayout content = new LinearLayout(activity); content.setOrientation(VERTICAL);
         AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(playlist.label()).setView(content)
                 .setNeutralButton("목록 관리", (d, w) -> manage(playlist)).setNegativeButton("닫기", null).create();
+        int lastWatched = WatchHistory.lastWatchedIndex(activity, playlist.videos);
+        RecyclerView episodes = null;
         if (playlist.videos.isEmpty()) {
             TextView empty = new TextView(activity); empty.setText("재생 가능한 영상이 없습니다. 목록 관리에서 영상을 추가해 주세요.");
+            empty.setTextColor(ContextCompat.getColor(activity, R.color.text_primary));
             empty.setPadding(dp(20), dp(16), dp(20), dp(16)); content.addView(empty);
         } else {
-            RecyclerView episodes = new RecyclerView(activity);
+            episodes = new RecyclerView(activity);
             episodes.setLayoutManager(new LinearLayoutManager(activity));
-            episodes.setAdapter(new EpisodeAdapter(playlist, dialog));
+            episodes.setAdapter(new EpisodeAdapter(playlist, dialog, lastWatched));
             content.addView(episodes, new LayoutParams(LayoutParams.MATCH_PARENT,
                     Math.min(dp(440), getResources().getDisplayMetrics().heightPixels / 2)));
-            dialog.setOnDismissListener(d -> episodes.setAdapter(null));
+            RecyclerView episodeList = episodes;
+            dialog.setOnDismissListener(d -> episodeList.setAdapter(null));
         }
         dialog.show();
+        if (episodes != null && lastWatched > 0) {
+            RecyclerView episodeList = episodes;
+            episodeList.post(() -> episodeList.scrollToPosition(lastWatched));
+        }
     }
 
     private void playEpisode(VideoPlaylist playlist, int index, AlertDialog dialog) {
@@ -205,8 +227,21 @@ public final class PlaylistChannelView extends LinearLayout {
         @Override public RowHolder onCreateViewHolder(ViewGroup parent, int type) { return createRow(parent); }
         @Override public void onBindViewHolder(RowHolder holder, int position) {
             VideoPlaylist playlist = groups.get(position); holder.title.setText(playlist.label());
-            holder.detail.setText((playlist.automatic ? "자동 재생목록" : "수동 재생목록") + " · " + playlist.videos.size() + "개 영상");
+            String summary = (playlist.automatic ? "자동 재생목록" : "수동 재생목록") + " · " + playlist.videos.size() + "개 영상";
+            int last = WatchHistory.lastWatchedIndex(activity, playlist.videos);
+            int secondary = ContextCompat.getColor(activity, R.color.text_secondary);
+            holder.detail.setTextColor(secondary);
+            if (last >= 0) {
+                String watched = "\n마지막 시청 · " + playlist.videos.get(last).title;
+                SpannableString text = new SpannableString(summary + watched);
+                text.setSpan(new ForegroundColorSpan(secondary), 0, summary.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                text.setSpan(new ForegroundColorSpan(ContextCompat.getColor(activity, R.color.last_watched_accent)),
+                        summary.length(), text.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                holder.detail.setText(text);
+            } else holder.detail.setText(summary);
             holder.action.setText("회차 선택  ›");
+            holder.action.setTextColor(ContextCompat.getColor(activity, R.color.accent_dark));
+            holder.itemView.setBackgroundResource(R.drawable.bg_playlist_card);
             PlaylistThumbnails.bind(holder.thumbnail, cover(playlist));
             holder.itemView.setOnClickListener(v -> showEpisodes(playlist));
         }
@@ -217,12 +252,23 @@ public final class PlaylistChannelView extends LinearLayout {
     private final class EpisodeAdapter extends RecyclerView.Adapter<RowHolder> {
         private final VideoPlaylist playlist;
         private final AlertDialog dialog;
-        EpisodeAdapter(VideoPlaylist playlist, AlertDialog dialog) { this.playlist = playlist; this.dialog = dialog; }
+        private final int lastWatched;
+        EpisodeAdapter(VideoPlaylist playlist, AlertDialog dialog, int lastWatched) {
+            this.playlist = playlist; this.dialog = dialog; this.lastWatched = lastWatched;
+        }
         @Override public RowHolder onCreateViewHolder(ViewGroup parent, int type) { return createRow(parent); }
         @Override public void onBindViewHolder(RowHolder holder, int position) {
             VideoItem video = playlist.videos.get(position);
-            holder.title.setText(video.title); holder.detail.setText((position + 1) + " / " + playlist.videos.size());
-            holder.action.setText("이 영상부터 재생  ›");
+            boolean last = position == lastWatched;
+            holder.title.setText(video.title);
+            holder.title.setTextColor(ContextCompat.getColor(activity, R.color.text_primary));
+            holder.detail.setTextColor(ContextCompat.getColor(activity, last ? R.color.last_watched_accent : R.color.text_secondary));
+            holder.detail.setText(last
+                    ? "마지막에 본 영상 · " + (position + 1) + " / " + playlist.videos.size()
+                    : (position + 1) + " / " + playlist.videos.size());
+            holder.action.setText(last ? "여기서 이어보기  ›" : "이 영상부터 재생  ›");
+            holder.action.setTextColor(ContextCompat.getColor(activity, last ? R.color.last_watched_accent : R.color.accent_dark));
+            holder.itemView.setBackgroundResource(last ? R.drawable.bg_playlist_card_last : R.drawable.bg_playlist_card);
             PlaylistThumbnails.bind(holder.thumbnail, video.thumbnailPath);
             holder.itemView.setOnClickListener(v -> playEpisode(playlist, position, dialog));
         }

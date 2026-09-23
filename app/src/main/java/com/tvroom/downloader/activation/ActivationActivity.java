@@ -11,6 +11,7 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import com.tvroom.downloader.MainActivity;
 import com.tvroom.downloader.R;
+import com.tvroom.downloader.storage.AppSettings;
 import com.tvroom.downloader.ui.SystemBarInsets;
 
 public final class ActivationActivity extends AppCompatActivity {
@@ -25,13 +26,14 @@ public final class ActivationActivity extends AppCompatActivity {
     private TelegramActivationClient telegramClient;
 
     @Override protected void onCreate(Bundle state) {
+        AppSettings.applyNightMode(this);
         super.onCreate(state);
         if (ActivationStore.isActivated(this)) {
             openMain();
             return;
         }
         setContentView(R.layout.activity_activation);
-        SystemBarInsets.apply(this, findViewById(R.id.activation_root), true);
+        SystemBarInsets.apply(this, findViewById(R.id.activation_root), !AppSettings.isBlackTheme(this));
 
         nameSection = findViewById(R.id.name_section);
         activationSection = findViewById(R.id.activation_section);

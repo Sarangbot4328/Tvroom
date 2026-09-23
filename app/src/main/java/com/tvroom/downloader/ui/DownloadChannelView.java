@@ -91,7 +91,13 @@ public final class DownloadChannelView extends android.widget.FrameLayout {
         refreshButton.setOnClickListener(v -> {
             if (!cancelExportSelection()) refresh();
         });
-        findViewById(R.id.playlist_switch).setOnClickListener(v -> setPlaylistMode(!playlistMode));
+        Button playlistSwitch = findViewById(R.id.playlist_switch);
+        playlistSwitch.setOnClickListener(v -> setPlaylistMode(!playlistMode));
+        if (AppSettings.isBlackTheme(activity)) {
+            playlistSwitch.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                    ContextCompat.getColor(activity, R.color.accent)));
+            playlistSwitch.setTextColor(android.graphics.Color.WHITE);
+        }
         swipe.setOnRefreshListener(this::refresh); setPlaylistMode(playlistStore.isPlaylistMode());
     }
 
@@ -105,6 +111,10 @@ public final class DownloadChannelView extends android.widget.FrameLayout {
         exportButton.setVisibility(enabled ? GONE : VISIBLE);
         status.setText(enabled ? "자동 회차 묶음과 나만의 재생목록" : "저장한 영상을 오프라인으로 볼 수 있습니다");
         refresh();
+    }
+
+    public void refreshLastWatched() {
+        if (playlistMode) playlists.refresh();
     }
 
     public void refresh() {
@@ -234,6 +244,14 @@ public final class DownloadChannelView extends android.widget.FrameLayout {
             });
             holder.play.setVisibility(exportSelection ? GONE : VISIBLE);
             holder.delete.setVisibility(exportSelection ? GONE : VISIBLE);
+            if (AppSettings.isBlackTheme(activity)) {
+                holder.play.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                        ContextCompat.getColor(activity, R.color.accent)));
+                holder.play.setTextColor(android.graphics.Color.WHITE);
+                holder.delete.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                        ContextCompat.getColor(activity, R.color.button_muted)));
+                holder.delete.setTextColor(android.graphics.Color.WHITE);
+            }
             holder.play.setEnabled(playable);
             holder.play.setOnClickListener(v -> {
                 if (!playable) return;

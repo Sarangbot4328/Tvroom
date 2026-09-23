@@ -19,8 +19,10 @@ import java.util.concurrent.Executors;
 
 public final class SettingsChannelView extends android.widget.FrameLayout {
     private final MainActivity activity;
+    private static final String[] THEME_LABELS = {"화이트", "블랙"};
     private final EditText url;
     private final Button cleanup;
+    private final Button themeButton;
     private final TextView cleanupStatus, version;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private boolean cleaning;
@@ -30,7 +32,15 @@ public final class SettingsChannelView extends android.widget.FrameLayout {
         LayoutInflater.from(activity).inflate(R.layout.channel_settings, this, true);
         url = findViewById(R.id.tvroom_url); cleanup = findViewById(R.id.cleanup_temp_files);
         cleanupStatus = findViewById(R.id.cleanup_temp_status); version = findViewById(R.id.app_version);
-        findViewById(R.id.save_tvroom_url).setOnClickListener(v -> saveAddress());
+        themeButton = findViewById(R.id.app_theme);
+        themeButton.setOnClickListener(v -> chooseTheme());
+        Button save = findViewById(R.id.save_tvroom_url);
+        save.setOnClickListener(v -> saveAddress());
+        if (AppSettings.isBlackTheme(activity)) {
+            save.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                    activity.getColor(R.color.accent)));
+            save.setTextColor(android.graphics.Color.WHITE);
+        }
         Button layout = findViewById(R.id.download_layout);
         String[] modes = {"기본 모드 · 한 줄에 1개", "태블릿 모드 · 한 줄에 2개", "태블릿 모드 · 한 줄에 3개"};
         layout.setText(modes[AppSettings.getDownloadColumns(activity) - 1]);
@@ -45,11 +55,21 @@ public final class SettingsChannelView extends android.widget.FrameLayout {
         cleanup.setOnClickListener(v -> confirmCleanup()); refresh();
     }
 
+    private void chooseTheme() {
+        new AlertDialog.Builder(activity).setTitle("화면 테마")
+                .setSingleChoiceItems(THEME_LABELS, AppSettings.isBlackTheme(activity) ? 1 : 0, (dialog, which) -> {
+                    String theme = which == 1 ? AppSettings.THEME_BLACK : AppSettings.THEME_WHITE;
+                    if (AppSettings.setTheme(activity, theme)) AppSettings.applyNightMode(activity);
+                    dialog.dismiss();
+                }).setNegativeButton("닫기", null).show();
+    }
+
     public void refresh() {
+        themeButton.setText(THEME_LABELS[AppSettings.isBlackTheme(activity) ? 1 : 0]);
         url.setText(AppSettings.getSiteUrl(activity));
         cleanup.setEnabled(!cleaning && !VideoDownloadService.isRunning());
         try { version.setText("버전 " + activity.getPackageManager().getPackageInfo(activity.getPackageName(), 0).versionName); }
-        catch (Exception ignored) { version.setText("버전 1.1.22"); }
+        catch (Exception ignored) { version.setText("버전 1.1.25"); }
     }
 
     private void saveAddress() {
